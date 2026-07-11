@@ -1,0 +1,47 @@
+{
+  "name": "@kud/jenkins",
+  "version": "1.0.0",
+  "description": "Headless Jenkins core — client, config, and types (data · actions · auth).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "jenkins",
+    "ci",
+    "client",
+    "api",
+    "devops",
+    "core"
+  ],
+  "author": "Erwann Mest <m@kud.io>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kud/jenkins"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.1",
+    "typescript": "5.9.2"
+  }
+}
