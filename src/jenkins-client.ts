@@ -29,6 +29,13 @@ interface InternalRequestOptions {
   body?: any
 }
 
+// REST path for a (possibly nested) job: "folder/job" → "job/folder/job/job",
+// encoding each segment. encodeURIComponent alone turns "/" into %2F, which
+// breaks nested folder jobs; splitting on "/" and re-interleaving "job/" is the
+// correct Jenkins path form.
+export const jobPath = (job: string): string =>
+  "job/" + job.split("/").map(encodeURIComponent).join("/job/")
+
 export class JenkinsClient {
   baseUrl: string
   user: string
@@ -154,7 +161,7 @@ export class JenkinsClient {
 
   async getJob(job: string): Promise<JenkinsJob> {
     return this._request<JenkinsJob>(
-      `job/${encodeURIComponent(job)}/api/json?depth=1`,
+      `${jobPath(job)}/api/json?depth=1`,
     )
   }
 
@@ -166,7 +173,7 @@ export class JenkinsClient {
       buildNumber = number
     }
     return this._request<JenkinsBuild>(
-      `job/${encodeURIComponent(job)}/${buildNumber}/api/json`,
+      `${jobPath(job)}/${buildNumber}/api/json`,
     )
   }
 
@@ -178,7 +185,7 @@ export class JenkinsClient {
       buildNumber = number
     }
     const text = await this._request<string>(
-      `job/${encodeURIComponent(job)}/${buildNumber}/consoleText`,
+      `${jobPath(job)}/${buildNumber}/consoleText`,
     )
     return text
   }
@@ -203,7 +210,7 @@ export class JenkinsClient {
     let finished = false
     while (!finished) {
       if (isAborted()) break
-      const urlPath = `job/${encodeURIComponent(job)}/${buildNumber}/logText/progressiveText?start=${start}`
+      const urlPath = `${jobPath(job)}/${buildNumber}/logText/progressiveText?start=${start}`
       const url = joinUrl(this.baseUrl, urlPath)
       const res = await this._fetchWithTimeout(url, {
         headers: { Authorization: this.authHeader },
@@ -234,7 +241,7 @@ export class JenkinsClient {
     const headers: Record<string, string> = { Authorization: this.authHeader }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
-    const url = joinUrl(this.baseUrl, `job/${encodeURIComponent(job)}/build`)
+    const url = joinUrl(this.baseUrl, `${jobPath(job)}/build`)
     const res = await this._fetchWithTimeout(url, { method: "POST", headers })
     if ([200, 201, 202].includes(res.status))
       return { queued: true, location: res.headers.get("location") }
@@ -256,7 +263,7 @@ export class JenkinsClient {
     for (const [k, v] of Object.entries(params)) body.append(k, v)
     const url = joinUrl(
       this.baseUrl,
-      `job/${encodeURIComponent(job)}/buildWithParameters`,
+      `${jobPath(job)}/buildWithParameters`,
     )
     const res = await this._fetchWithTimeout(url, {
       method: "POST",
@@ -280,7 +287,7 @@ export class JenkinsClient {
       headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(
       this.baseUrl,
-      `job/${encodeURIComponent(job)}/${buildNumber}/stop`,
+      `${jobPath(job)}/${buildNumber}/stop`,
     )
     const res = await this._fetchWithTimeout(url, { method: "POST", headers })
     if (![200, 201, 202].includes(res.status))
@@ -308,20 +315,20 @@ export class JenkinsClient {
   async getTestReport(job: string, buildNumber: number): Promise<any> {
     // refine later
     return this._request<any>(
-      `job/${encodeURIComponent(job)}/${buildNumber}/testReport/api/json`,
+      `${jobPath(job)}/${buildNumber}/testReport/api/json`,
     )
   }
 
   async getPipelineStages(job: string, buildNumber: number): Promise<any> {
     return this._request<any>(
-      `job/${encodeURIComponent(job)}/${buildNumber}/wfapi/describe`,
+      `${jobPath(job)}/${buildNumber}/wfapi/describe`,
     )
   }
 
   // Build parameter definitions — so a caller knows what to pass to `build --param`.
   async getJobParameters(job: string): Promise<JenkinsParameterDefinition[]> {
     const data = await this._request<any>(
-      `job/${encodeURIComponent(job)}/api/json?tree=property[parameterDefinitions[name,type,description,choices,defaultParameterValue[value]]]`,
+      `${jobPath(job)}/api/json?tree=property[parameterDefinitions[name,type,description,choices,defaultParameterValue[value]]]`,
     )
     const defs = (data?.property || []).flatMap(
       (p: any) => p.parameterDefinitions || [],
@@ -349,7 +356,7 @@ export class JenkinsClient {
     const tree =
       "number,actions[causes[shortDescription]],changeSets[items[commitId,msg,date,author[fullName]]],culprits[fullName]"
     const data = await this._request<any>(
-      `job/${encodeURIComponent(job)}/${buildNumber}/api/json?tree=${tree}`,
+      `${jobPath(job)}/${buildNumber}/api/json?tree=${tree}`,
     )
     const causes = (data.actions || [])
       .flatMap((a: any) => a.causes || [])
@@ -395,7 +402,7 @@ export class JenkinsClient {
     relativePath: string,
   ): Promise<Buffer> {
     return this._request(
-      `job/${encodeURIComponent(job)}/${buildNumber}/artifact/${relativePath}`,
+      `${jobPath(job)}/${buildNumber}/artifact/${relativePath}`,
       { as: "buffer" },
     )
   }
