@@ -160,9 +160,7 @@ export class JenkinsClient {
   }
 
   async getJob(job: string): Promise<JenkinsJob> {
-    return this._request<JenkinsJob>(
-      `${jobPath(job)}/api/json?depth=1`,
-    )
+    return this._request<JenkinsJob>(`${jobPath(job)}/api/json?depth=1`)
   }
 
   async getBuild(job: string, buildNumber?: number): Promise<JenkinsBuild> {
@@ -261,10 +259,7 @@ export class JenkinsClient {
       headers[crumb.crumbRequestField] = crumb.crumb
     const body = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) body.append(k, v)
-    const url = joinUrl(
-      this.baseUrl,
-      `${jobPath(job)}/buildWithParameters`,
-    )
+    const url = joinUrl(this.baseUrl, `${jobPath(job)}/buildWithParameters`)
     const res = await this._fetchWithTimeout(url, {
       method: "POST",
       headers,
@@ -285,10 +280,7 @@ export class JenkinsClient {
     const headers: Record<string, string> = { Authorization: this.authHeader }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
-    const url = joinUrl(
-      this.baseUrl,
-      `${jobPath(job)}/${buildNumber}/stop`,
-    )
+    const url = joinUrl(this.baseUrl, `${jobPath(job)}/${buildNumber}/stop`)
     const res = await this._fetchWithTimeout(url, { method: "POST", headers })
     if (![200, 201, 202].includes(res.status))
       throw new Error(`Stop failed: ${res.status} ${res.statusText}`)
@@ -319,10 +311,47 @@ export class JenkinsClient {
     )
   }
 
-  async getPipelineStages(job: string, buildNumber: number): Promise<any> {
+  // buildNumber omitted => resolve Jenkins' `lastBuild` permalink server-side,
+  // so `stages <job>` targets the latest build (matching getBuild/getBuildChanges).
+  async getPipelineStages(
+    job: string,
+    buildNumber?: number | string,
+  ): Promise<any> {
+    const ref = buildNumber ?? "lastBuild"
+    return this._request<any>(`${jobPath(job)}/${ref}/wfapi/describe`)
+  }
+
+  // The steps inside a single pipeline stage node (from the stage `id` returned
+  // by getPipelineStages) → { stageFlowNodes: [{ id, name, status, ... }] }.
+  async getStageSteps(
+    job: string,
+    buildNumber: number | string,
+    nodeId: string,
+  ): Promise<any> {
     return this._request<any>(
-      `${jobPath(job)}/${buildNumber}/wfapi/describe`,
+      `${jobPath(job)}/${buildNumber}/execution/node/${nodeId}/wfapi/describe`,
     )
+  }
+
+  // A single step's log text. The wfapi log endpoint wraps it in { text } and
+  // returns Jenkins' HTML-annotated console (<a href=…> links, entities), so we
+  // strip tags and decode entities down to plain text.
+  async getStepLog(
+    job: string,
+    buildNumber: number | string,
+    stepId: string,
+  ): Promise<string> {
+    const r = await this._request<any>(
+      `${jobPath(job)}/${buildNumber}/execution/node/${stepId}/wfapi/log`,
+    )
+    const raw = (r && r.text) || ""
+    return raw
+      .replace(/<[^>]+>/g, "")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
   }
 
   // Build parameter definitions — so a caller knows what to pass to `build --param`.
@@ -442,21 +471,43 @@ export class JenkinsClient {
     return results
   }
 
+  // Fetch the top-level job list. A failure here means Jenkins is unreachable
+  // (bad URL/credentials, server down, or — most often — off the VPN), so we
+  // rethrow with a hint rather than letting callers swallow it into an empty
+  // result. Distinct from per-folder crawl errors, which callers tolerate.
+  private async _fetchRoot(): Promise<{ jobs?: JenkinsJob[] }> {
+    try {
+      return await this._request<{ jobs?: JenkinsJob[] }>(
+        `api/json?tree=jobs[name,url,color]`,
+      )
+    } catch (e) {
+      throw new Error(
+        `Cannot reach Jenkins at ${this.baseUrl}: ${(e as Error).message}. ` +
+          `Check the server URL and that you're connected (VPN?).`,
+      )
+    }
+  }
+
+  // List only the top-level jobs (a single request). This is the fast,
+  // predictable default for "list the jobs" — folders appear as entries you
+  // can drill into, rather than triggering a full recursive tree walk.
+  async listJobs(): Promise<JenkinsJob[]> {
+    const root = await this._fetchRoot()
+    for (const j of root.jobs || []) if (!j.fullName) j.fullName = j.name || ""
+    return root.jobs || []
+  }
+
   async searchJobs(query: string, limit = 50): Promise<JenkinsJob[]> {
     // New BFS recursive traversal without artificial depth restriction.
     // If limit === 0 treat as unlimited (subject to safety cap) to support large instances.
     const safetyCap = 5000 // Prevent pathological traversal from overwhelming UI.
     const effectiveLimit = limit === 0 ? safetyCap : limit
 
-    // Start with shallow root job list; expand folders iteratively.
-    let root: { jobs?: JenkinsJob[] } = { jobs: [] }
-    try {
-      root = await this._request<{ jobs?: JenkinsJob[] }>(
-        `api/json?tree=jobs[name,url,color]`,
-      )
-    } catch {
-      return [] // Cannot even fetch root
-    }
+    // Root fetch is the reachability probe: if it fails, every folder crawl
+    // below is doomed too, so surface the error instead of returning an empty
+    // list that reads as "no matches" (masking e.g. an unreachable server /
+    // missing VPN). Inner folder failures stay forgiving further down.
+    const root = await this._fetchRoot()
 
     const queue: Array<{ job: JenkinsJob; path: string[] }> = []
     const results: JenkinsJob[] = []
@@ -528,14 +579,7 @@ export class JenkinsClient {
     const effectiveLimit = limit === 0 ? safetyCap : limit
     const concurrency = Math.min(Math.max(opts.concurrency ?? 5, 1), 10)
 
-    let root: { jobs?: JenkinsJob[] } = { jobs: [] }
-    try {
-      root = await this._request<{ jobs?: JenkinsJob[] }>(
-        `api/json?tree=jobs[name,url,color]`,
-      )
-    } catch {
-      return []
-    }
+    const root = await this._fetchRoot()
 
     const queue: Array<{ job: JenkinsJob; path: string[] }> = []
     const results: JenkinsJob[] = []

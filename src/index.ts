@@ -1,4 +1,5 @@
 export * from "./jenkins-client.js"
+export * from "./formatters.js"
 export * from "./config.js"
 export * from "./types.js"
 export * from "./url-utils.js"
