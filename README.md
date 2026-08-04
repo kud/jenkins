@@ -46,8 +46,23 @@ Configuration resolves in layers — named server profile → environment variab
 ```sh
 export JENKINS_URL=https://ci.example.com
 export JENKINS_USER=erwann
-export JENKINS_TOKEN=xxxxxxxxxxxx
+export JENKINS_API_TOKEN=xxxxxxxxxxxx
 ```
+
+Several instances can be declared at once, comma or pipe separated and matched
+positionally. `JENKINS_INSTANCES` names them; without it, each name is derived
+from its URL's first hostname label. The first instance is the default, and
+`JENKINS_SERVER` (or a `server` override) selects another:
+
+```sh
+export JENKINS_INSTANCES=pipeline,scheduler
+export JENKINS_URL=https://pipeline.example.com,https://scheduler.example.com
+export JENKINS_USER=erwann          # a single value applies to every instance
+export JENKINS_API_TOKEN=tok1,tok2
+```
+
+A name/URL count mismatch is an error rather than a best-effort pairing: a short
+list would silently authenticate one instance with another's credentials.
 
 Or manage named servers on disk (`~/.config/jenkins-cli/config.json`, override the base with `XDG_CONFIG_HOME`):
 
