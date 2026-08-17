@@ -131,3 +131,32 @@ test("getBuildChanges extracts cause, culprits and commits", async () => {
   assert.equal(info.commits[0].author, "Carol")
   assert.equal(info.commits[0].msg, "fix bug")
 })
+
+// `tree()` is the escape hatch every other method's fixed `tree` makes
+// necessary. These assert the URL it builds, because that is the whole
+// behaviour — a wrong separator or an unencoded bracket is a 400 from Jenkins
+// and reads to the caller like a field that does not exist.
+test("tree appends an encoded tree filter", async () => {
+  const client = new JenkinsClient("http://jenkins", "u", "t")
+  calls.length = 0
+  await client.tree("api/json", "jobs[name,_class]").catch(() => undefined)
+  const url = String(calls.at(-1)?.url ?? "")
+  assert.ok(url.includes("api/json?tree="), `no tree param in ${url}`)
+  assert.ok(url.includes("jobs%5Bname%2C_class%5D"), `brackets unencoded in ${url}`)
+})
+
+test("tree joins with & when the path already has a query", async () => {
+  const client = new JenkinsClient("http://jenkins", "u", "t")
+  calls.length = 0
+  await client.tree("api/json?depth=1", "jobs[name]").catch(() => undefined)
+  const url = String(calls.at(-1)?.url ?? "")
+  assert.ok(url.includes("depth=1&tree="), `wrong separator in ${url}`)
+})
+
+test("tree without a filter is a plain request", async () => {
+  const client = new JenkinsClient("http://jenkins", "u", "t")
+  calls.length = 0
+  await client.tree("api/json").catch(() => undefined)
+  const url = String(calls.at(-1)?.url ?? "")
+  assert.ok(!url.includes("tree="), `unexpected tree param in ${url}`)
+})

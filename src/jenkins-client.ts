@@ -159,6 +159,31 @@ export class JenkinsClient {
     }
   }
 
+  /**
+   * Any Jenkins remote-access endpoint, with a `tree` filter you choose.
+   *
+   * `listJobs()` and friends fetch a fixed `tree`, which is right for the CLI
+   * and wrong for anything that needs a field they did not think to ask for —
+   * `healthReport`, `_class`, or `lastBuild[actions[causes[*]]]`, which is the
+   * only way to learn what actually triggered a build. Without this, a consumer
+   * has to hand-roll a second HTTP client beside this one and re-implement
+   * auth, retry and crumb handling to reach one extra field.
+   *
+   * ⚠ `path` is a Jenkins API path, not a job name — pass `api/json` for the
+   * instance, or build a nested one with `jobPath()`. Folders nest in the URL
+   * (`/job/org/job/repo/job/branch`), so encoding a slashed name as one segment
+   * returns a 404 that reads exactly like a job that does not exist.
+   *
+   * @example
+   * await client.tree("api/json", "jobs[name,_class,lastBuild[result]]")
+   * await client.tree(`${jobPath("org/repo/main")}/api/json`, "builds[number,result]{0,10}")
+   */
+  async tree<T = any>(path: string, tree?: string): Promise<T> {
+    const sep = path.includes("?") ? "&" : "?"
+    const suffix = tree ? `${sep}tree=${encodeURIComponent(tree)}` : ""
+    return this._request<T>(`${path}${suffix}`)
+  }
+
   async getJob(job: string): Promise<JenkinsJob> {
     return this._request<JenkinsJob>(`${jobPath(job)}/api/json?depth=1`)
   }
