@@ -14,6 +14,8 @@ All notable changes to this project are documented here.
 
 - **Stray slashes in a job name no longer produce a false "job not found".** A leading, trailing, or doubled slash — ordinary input when job names come from config files, CLI arguments, or API responses — used to build a path like `job//job/...`, which Jenkins answers with a 404 indistinguishable from the job genuinely not existing. Empty path segments are now dropped before the request goes out. `jobPath` also gained its first test coverage, despite being exported and relied on by nearly every method. ([538d7a5](https://github.com/kud/jenkins/commit/538d7a5821d775b0f9b3fefd52fc70799a84055e))
 
+- **An anonymous Jenkins is now genuinely anonymous.** `user` and `token` are optional, and leaving them out sends no `Authorization` header at all. The Basic header used to be built unconditionally, so a client with no credentials still presented one — well formed, and authenticating as nobody — which a server answers with a 401 or records as a login attempt nobody made. Neither of those reads as "no credentials were configured". Existing three-argument callers are unaffected. ([f30cdfd](https://github.com/kud/jenkins/commit/f30cdfda9cbc0a46ec2da7243fa005d4c69bd8ae))
+
 <details>
 <summary>Internal (2 commits)</summary>
 
