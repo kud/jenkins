@@ -53,23 +53,44 @@ export class JenkinsClient {
   retries: number
   retryDelay: number
 
+  // ⚠ CREDENTIALS ARE OPTIONAL, AND AN ABSENT ONE MUST SEND NO HEADER AT ALL.
+  // A Jenkins that allows anonymous read is a real configuration, and this used
+  // to build the header unconditionally — so omitting the user and token still
+  // sent a Basic credential, well formed and authenticating as nobody
+  // (`Basic Og==`, or base64("undefined:undefined") from an untyped caller).
+  // Depending on the server that is a 401 or an audit-log entry for a login
+  // nobody attempted, and neither reads as "no credentials were configured".
+  //
+  // The fields stay typed `string` and default to `""` rather than becoming
+  // optional: `client.user` is public, and widening it to `string | undefined`
+  // would be a breaking change for consumers over a case they do not have.
   constructor(
     baseUrl: string,
-    user: string,
-    token: string,
+    user = "",
+    token = "",
     opts: { timeout?: number; retries?: number; retryDelay?: number } = {},
   ) {
     this.baseUrl = baseUrl
     this.user = user
     this.token = token
     this.authHeader =
-      "Basic " + Buffer.from(`${user}:${token}`).toString("base64")
+      user && token
+        ? "Basic " + Buffer.from(`${user}:${token}`).toString("base64")
+        : ""
     const timeout = opts.timeout ?? 15000
     const retries = opts.retries ?? 0
     this.timeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 15000
     this.retries =
       Number.isFinite(retries) && retries >= 0 && retries < 10 ? retries : 0
     this.retryDelay = opts.retryDelay ?? 500 // backoff base ms
+  }
+
+  // Spread rather than assigned, so no-credentials sends NO Authorization
+  // header rather than an empty one. An empty `Authorization:` is not the same
+  // request as none: some servers reject it outright and some log it, and
+  // either way the wire stops matching what was configured.
+  private get authHeaders(): Record<string, string> {
+    return this.authHeader ? { Authorization: this.authHeader } : {}
   }
 
   private async _fetchWithTimeout(
@@ -119,7 +140,7 @@ export class JenkinsClient {
       try {
         const { as, ...forward } = opts
         res = await this._fetchWithTimeout(url, {
-          headers: { Authorization: this.authHeader, ...(opts.headers || {}) },
+          headers: { ...this.authHeaders, ...(opts.headers || {}) },
           method: opts.method,
           body: opts.body,
           ...forward,
@@ -244,7 +265,7 @@ export class JenkinsClient {
       const urlPath = `${jobPath(job)}/${buildNumber}/logText/progressiveText?start=${start}`
       const url = joinUrl(this.baseUrl, urlPath)
       const res = await this._fetchWithTimeout(url, {
-        headers: { Authorization: this.authHeader },
+        headers: { ...this.authHeaders },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status} streaming logs`)
       if (isAborted()) break
@@ -269,7 +290,7 @@ export class JenkinsClient {
     job: string,
   ): Promise<{ queued: true; location: string | null }> {
     const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { Authorization: this.authHeader }
+    const headers: Record<string, string> = { ...this.authHeaders }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(this.baseUrl, `${jobPath(job)}/build`)
@@ -285,7 +306,7 @@ export class JenkinsClient {
   ): Promise<{ queued: true; location: string | null }> {
     const crumb = await this._getCrumb()
     const headers: Record<string, string> = {
-      Authorization: this.authHeader,
+      ...this.authHeaders,
       "Content-Type": "application/x-www-form-urlencoded",
     }
     if (crumb?.crumb && crumb.crumbRequestField)
@@ -310,7 +331,7 @@ export class JenkinsClient {
     buildNumber: number,
   ): Promise<{ stopped: true }> {
     const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { Authorization: this.authHeader }
+    const headers: Record<string, string> = { ...this.authHeaders }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(this.baseUrl, `${jobPath(job)}/${buildNumber}/stop`)
@@ -327,7 +348,7 @@ export class JenkinsClient {
 
   async cancelQueueItem(id: number | string): Promise<{ cancelled: true }> {
     const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { Authorization: this.authHeader }
+    const headers: Record<string, string> = { ...this.authHeaders }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(this.baseUrl, `queue/cancelItem?id=${id}`)

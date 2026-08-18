@@ -189,3 +189,31 @@ test("jobPath drops empty segments from an untidy name", () => {
   assert.equal(jobPath("trailing/slash/"), "job/trailing/job/slash")
   assert.equal(jobPath("double//slash"), "job/double/job/slash")
 })
+
+// A Jenkins that allows anonymous read is a real configuration, and the client
+// used to build a Basic header unconditionally — so no credentials sent
+// base64("undefined:undefined"), a well-formed credential that is simply wrong.
+// The assertion is that the header is ABSENT, not that it is empty: an empty
+// `Authorization:` is a different request from none, and some servers reject it.
+test("no credentials sends no Authorization header at all", async () => {
+  const client = new JenkinsClient("http://jenkins")
+  calls.length = 0
+  await client.tree("api/json").catch(() => undefined)
+  const headers = (calls.at(-1)?.opts?.headers ?? {}) as Record<string, string>
+  assert.ok(
+    !("Authorization" in headers),
+    `expected no Authorization header, got ${JSON.stringify(headers)}`,
+  )
+  assert.equal(client.authHeader, "")
+})
+
+test("credentials still send Basic auth", async () => {
+  const client = new JenkinsClient("http://jenkins", "u", "t")
+  calls.length = 0
+  await client.tree("api/json").catch(() => undefined)
+  const headers = (calls.at(-1)?.opts?.headers ?? {}) as Record<string, string>
+  assert.equal(
+    headers.Authorization,
+    "Basic " + Buffer.from("u:t").toString("base64"),
+  )
+})
