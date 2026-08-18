@@ -33,8 +33,16 @@ interface InternalRequestOptions {
 // encoding each segment. encodeURIComponent alone turns "/" into %2F, which
 // breaks nested folder jobs; splitting on "/" and re-interleaving "job/" is the
 // correct Jenkins path form.
+//
+// ⚠ EMPTY SEGMENTS ARE DROPPED, and that is not cosmetic. A stray leading,
+// trailing or doubled slash used to survive into the URL as `job//job/...`,
+// which Jenkins answers with a 404 — indistinguishable from the job genuinely
+// not existing, so the caller goes looking for a deleted job rather than for
+// the extra slash they typed. Job names arrive from config files, CLI arguments
+// and API responses, so an untidy one is ordinary input rather than a
+// programming error, and must not be able to look like an absence.
 export const jobPath = (job: string): string =>
-  "job/" + job.split("/").map(encodeURIComponent).join("/job/")
+  "job/" + job.split("/").filter(Boolean).map(encodeURIComponent).join("/job/")
 
 export class JenkinsClient {
   baseUrl: string

@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { JenkinsClient } from "../src/jenkins-client.js"
+import { JenkinsClient, jobPath } from "../src/jenkins-client.js"
 
 // Mock fetch
 const calls = []
@@ -159,4 +159,33 @@ test("tree without a filter is a plain request", async () => {
   await client.tree("api/json").catch(() => undefined)
   const url = String(calls.at(-1)?.url ?? "")
   assert.ok(!url.includes("tree="), `unexpected tree param in ${url}`)
+})
+
+// `jobPath` is exported and nearly every method above routes through it, and it
+// had no test at all. Both failures it can produce are a 404, and a 404 from
+// Jenkins reads as "no such job" whatever actually caused it — so a wrong path
+// here does not surface as a bug, it surfaces as a job somebody deleted.
+test("jobPath nests folder segments rather than encoding the slashes", () => {
+  assert.equal(jobPath("nightly-reindex"), "job/nightly-reindex")
+  assert.equal(
+    jobPath("acme-org/checkout-api/master"),
+    "job/acme-org/job/checkout-api/job/master",
+  )
+  assert.ok(
+    !jobPath("acme-org/checkout-api/master").includes("%2F"),
+    "slashes must not be percent-encoded — that is a 404 on every nested job",
+  )
+})
+
+test("jobPath encodes within a segment but not across them", () => {
+  assert.equal(jobPath("acme org/with space"), "job/acme%20org/job/with%20space")
+})
+
+test("jobPath drops empty segments from an untidy name", () => {
+  // Each of these used to yield `job//job/...`, a 404 wearing the same face as
+  // a missing job. Job names come from config files and CLI arguments, so a
+  // stray slash is ordinary input rather than a caller's mistake.
+  assert.equal(jobPath("/leading/slash"), "job/leading/job/slash")
+  assert.equal(jobPath("trailing/slash/"), "job/trailing/job/slash")
+  assert.equal(jobPath("double//slash"), "job/double/job/slash")
 })
