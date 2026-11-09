@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.5.0 — 2026-11-09
+
+### Highlights
+
+- **Coloured test-runner errors are now found.** `diagnoseBuild` strips ANSI escapes and bare colour codes such as `[31m` from each failing step's log before matching, so a red `Error:` is no longer missed and the tail reads as plain text. `cleanStepLog` is exported. ([a6fb33e](https://github.com/kud/jenkins/commit/a6fb33e9ed9032cd9dc85230f822113c72d020b7))
+- **Two more default error patterns:** `FAIL` at line start and `Failed Tests N` (N ≥ 1), as printed by common JS test runners. ([a6fb33e](https://github.com/kud/jenkins/commit/a6fb33e9ed9032cd9dc85230f822113c72d020b7))
+
+---
+
 ## 2.4.0 — 2026-11-09
 
 ### Highlights
