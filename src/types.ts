@@ -58,3 +58,43 @@ export interface RequestOptions {
   as?: RequestAs
   body?: any
 }
+
+export interface DiagnoseBuildOptions {
+  lines?: number
+  maxBytes?: number
+  maxTests?: number
+}
+
+export interface FailedStep {
+  name: string
+  status: string
+  logTail: string
+}
+
+export interface FailedStage {
+  name: string
+  status: string
+  steps: FailedStep[]
+}
+
+export interface FailedTestCase {
+  name: string
+  error: string | null
+  stackHead: string | null
+}
+
+export interface TestSummary {
+  failed: number
+  total: number
+  first: FailedTestCase[]
+}
+
+export interface DiagnoseBuildResult {
+  job: string
+  build: number
+  result: string | null
+  url: string
+  failedStages: FailedStage[]
+  tests: TestSummary | null
+  hints: string[]
+}

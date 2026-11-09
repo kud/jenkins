@@ -5,6 +5,12 @@ import {
   JenkinsCrumb,
   JenkinsParameterDefinition,
   JenkinsBuildChanges,
+  DiagnoseBuildOptions,
+  DiagnoseBuildResult,
+  FailedStage,
+  FailedStep,
+  TestSummary,
+  FailedTestCase,
 } from "./types.js"
 
 const getFetch = () => globalThis.fetch as typeof fetch
@@ -83,7 +89,10 @@ export class JenkinsClient {
     this.retries =
       Number.isFinite(retries) && retries >= 0 && retries < 10 ? retries : 0
     this.retryDelay = opts.retryDelay ?? 500 // backoff base ms
+    this._resolvedPathCache = new Map()
   }
+
+  private _resolvedPathCache: Map<string, string>
 
   // Spread rather than assigned, so no-credentials sends NO Authorization
   // header rather than an empty one. An empty `Authorization:` is not the same
@@ -189,6 +198,111 @@ export class JenkinsClient {
   }
 
   /**
+   * Try a request with the plain jobPath. On 404, resolve the true path by
+   * walking the job hierarchy and checking _class at each level. Cache the
+   * resolved path so subsequent calls go straight there.
+   */
+  private async _requestWithPathResolution<T>(
+    job: string,
+    suffix: string,
+    requestFn: (path: string) => Promise<T>,
+  ): Promise<T> {
+    const cached = this._resolvedPathCache.get(job)
+    if (cached) return requestFn(cached + suffix)
+
+    const plainPath = jobPath(job) + suffix
+    try {
+      return await requestFn(plainPath)
+    } catch (err) {
+      if (!(err instanceof HttpError) || err.status !== 404) throw err
+    }
+
+    // Walk the path to find the real structure
+    const resolvedPath = await this._resolveMultibranchPath(job)
+    if (resolvedPath !== plainPath) {
+      this._resolvedPathCache.set(job, resolvedPath)
+      return requestFn(resolvedPath + suffix)
+    }
+
+    // Resolution found nothing different; surface original 404
+    throw new HttpError(404, `HTTP 404 Not Found: ${joinUrl(this.baseUrl, plainPath)}`)
+  }
+
+  /**
+   * Walk the job path segment by segment, fetching _class at each level.
+   * When a WorkflowMultiBranchProject is found, all remaining segments form
+   * the branch name (joined with "/" and encoded once).
+   * When an OrganizationFolder is found, the next segment is the repo
+   * (a multibranch project), and segments after that form the branch.
+   */
+  private async _resolveMultibranchPath(job: string): Promise<string> {
+    const segments = job.split("/").filter(Boolean)
+    if (segments.length === 0) return jobPath(job)
+
+    let pathSoFar = ""
+    let multibranchIndex = -1
+    let orgFolderIndex = -1
+
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i]
+      const encoded = encodeURIComponent(segment)
+      pathSoFar = pathSoFar ? `${pathSoFar}/job/${encoded}` : `job/${encoded}`
+
+      // Fetch _class at this level
+      let klass: string | undefined
+      try {
+        const data = await this._request<{ _class?: string }>(
+          `${pathSoFar}/api/json?tree=_class`,
+        )
+        klass = data?._class
+      } catch {
+        // If we can't fetch _class, assume plain path is correct
+        continue
+      }
+
+      if (!klass) continue
+
+      if (klass.includes("WorkflowMultiBranchProject")) {
+        multibranchIndex = i
+        break
+      }
+      if (klass.includes("OrganizationFolder")) {
+        orgFolderIndex = i
+        // Continue walking; the repo (next level) should be the multibranch project
+      }
+    }
+
+    // Reconstruct the correct path
+    if (multibranchIndex >= 0) {
+      // Segments 0..multibranchIndex are folders/project; the rest is the branch name
+      const prefixSegments = segments.slice(0, multibranchIndex + 1)
+      const branchSegments = segments.slice(multibranchIndex + 1)
+      if (branchSegments.length === 0) return jobPath(job) // No branch segment; plain path is fine
+
+      const prefixPath = prefixSegments.map(encodeURIComponent).join("/job/")
+      const branchName = branchSegments.join("/")
+      const branchEncoded = encodeURIComponent(branchName)
+      return `job/${prefixPath}/job/${branchEncoded}`
+    }
+
+    if (orgFolderIndex >= 0 && orgFolderIndex + 1 < segments.length) {
+      // Organization folder -> repo (multibranch) -> branch
+      // The repo is at orgFolderIndex + 1; branch is everything after
+      const prefixSegments = segments.slice(0, orgFolderIndex + 2) // org + repo
+      const branchSegments = segments.slice(orgFolderIndex + 2)
+      if (branchSegments.length === 0) return jobPath(job)
+
+      const prefixPath = prefixSegments.map(encodeURIComponent).join("/job/")
+      const branchName = branchSegments.join("/")
+      const branchEncoded = encodeURIComponent(branchName)
+      return `job/${prefixPath}/job/${branchEncoded}`
+    }
+
+    // No multibranch/org folder detected; plain path is correct
+    return jobPath(job)
+  }
+
+  /**
    * Any Jenkins remote-access endpoint, with a `tree` filter you choose.
    *
    * `listJobs()` and friends fetch a fixed `tree`, which is right for the CLI
@@ -214,7 +328,9 @@ export class JenkinsClient {
   }
 
   async getJob(job: string): Promise<JenkinsJob> {
-    return this._request<JenkinsJob>(`${jobPath(job)}/api/json?depth=1`)
+    return this._requestWithPathResolution(job, "/api/json?depth=1", (path) =>
+      this._request<JenkinsJob>(path),
+    )
   }
 
   async getBuild(job: string, buildNumber?: number): Promise<JenkinsBuild> {
@@ -224,8 +340,8 @@ export class JenkinsClient {
       if (!number) throw new Error("No lastBuild found")
       buildNumber = number
     }
-    return this._request<JenkinsBuild>(
-      `${jobPath(job)}/${buildNumber}/api/json`,
+    return this._requestWithPathResolution(job, `/${buildNumber}/api/json`, (path) =>
+      this._request<JenkinsBuild>(path),
     )
   }
 
@@ -236,10 +352,9 @@ export class JenkinsClient {
       if (!number) throw new Error("No lastBuild found")
       buildNumber = number
     }
-    const text = await this._request<string>(
-      `${jobPath(job)}/${buildNumber}/consoleText`,
+    return this._requestWithPathResolution(job, `/${buildNumber}/consoleText`, (path) =>
+      this._request<string>(path),
     )
-    return text
   }
 
   async streamConsole(
@@ -255,6 +370,8 @@ export class JenkinsClient {
       if (!number) throw new Error("No lastBuild found")
       buildNumber = number
     }
+
+    const resolvedPath = await this._getResolvedJobPath(job)
     let start = 0
     const signal = opts.signal
     const isAborted = () =>
@@ -262,7 +379,7 @@ export class JenkinsClient {
     let finished = false
     while (!finished) {
       if (isAborted()) break
-      const urlPath = `${jobPath(job)}/${buildNumber}/logText/progressiveText?start=${start}`
+      const urlPath = `${resolvedPath}/${buildNumber}/logText/progressiveText?start=${start}`
       const url = joinUrl(this.baseUrl, urlPath)
       const res = await this._fetchWithTimeout(url, {
         headers: { ...this.authHeaders },
@@ -286,6 +403,33 @@ export class JenkinsClient {
     }
   }
 
+  /**
+   * Get the resolved job path (with multibranch handling), caching the result.
+   * Used by methods that build URLs directly with joinUrl instead of _request.
+   */
+  private async _getResolvedJobPath(job: string): Promise<string> {
+    const plainPath = jobPath(job)
+    const cached = this._resolvedPathCache.get(job)
+    if (cached) return cached
+    if (!job.includes("/")) return plainPath
+
+    try {
+      await this._request(`${plainPath}/api/json?tree=_class`)
+      return plainPath
+    } catch (err) {
+      if (!(err instanceof HttpError) || err.status !== 404) return plainPath
+    }
+
+    try {
+      const resolved = await this._resolveMultibranchPath(job)
+      this._resolvedPathCache.set(job, resolved)
+      return resolved
+    } catch {
+      this._resolvedPathCache.set(job, plainPath)
+      return plainPath
+    }
+  }
+
   async triggerBuild(
     job: string,
   ): Promise<{ queued: true; location: string | null }> {
@@ -293,7 +437,8 @@ export class JenkinsClient {
     const headers: Record<string, string> = { ...this.authHeaders }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
-    const url = joinUrl(this.baseUrl, `${jobPath(job)}/build`)
+    const resolvedPath = await this._getResolvedJobPath(job)
+    const url = joinUrl(this.baseUrl, `${resolvedPath}/build`)
     const res = await this._fetchWithTimeout(url, { method: "POST", headers })
     if ([200, 201, 202].includes(res.status))
       return { queued: true, location: res.headers.get("location") }
@@ -313,7 +458,8 @@ export class JenkinsClient {
       headers[crumb.crumbRequestField] = crumb.crumb
     const body = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) body.append(k, v)
-    const url = joinUrl(this.baseUrl, `${jobPath(job)}/buildWithParameters`)
+    const resolvedPath = await this._getResolvedJobPath(job)
+    const url = joinUrl(this.baseUrl, `${resolvedPath}/buildWithParameters`)
     const res = await this._fetchWithTimeout(url, {
       method: "POST",
       headers,
@@ -334,7 +480,8 @@ export class JenkinsClient {
     const headers: Record<string, string> = { ...this.authHeaders }
     if (crumb?.crumb && crumb.crumbRequestField)
       headers[crumb.crumbRequestField] = crumb.crumb
-    const url = joinUrl(this.baseUrl, `${jobPath(job)}/${buildNumber}/stop`)
+    const resolvedPath = await this._getResolvedJobPath(job)
+    const url = joinUrl(this.baseUrl, `${resolvedPath}/${buildNumber}/stop`)
     const res = await this._fetchWithTimeout(url, { method: "POST", headers })
     if (![200, 201, 202].includes(res.status))
       throw new Error(`Stop failed: ${res.status} ${res.statusText}`)
@@ -360,8 +507,10 @@ export class JenkinsClient {
 
   async getTestReport(job: string, buildNumber: number): Promise<any> {
     // refine later
-    return this._request<any>(
-      `${jobPath(job)}/${buildNumber}/testReport/api/json`,
+    return this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/testReport/api/json`,
+      (path) => this._request<any>(path),
     )
   }
 
@@ -372,7 +521,11 @@ export class JenkinsClient {
     buildNumber?: number | string,
   ): Promise<any> {
     const ref = buildNumber ?? "lastBuild"
-    return this._request<any>(`${jobPath(job)}/${ref}/wfapi/describe`)
+    return this._requestWithPathResolution(
+      job,
+      `/${ref}/wfapi/describe`,
+      (path) => this._request<any>(path),
+    )
   }
 
   // The steps inside a single pipeline stage node (from the stage `id` returned
@@ -382,8 +535,10 @@ export class JenkinsClient {
     buildNumber: number | string,
     nodeId: string,
   ): Promise<any> {
-    return this._request<any>(
-      `${jobPath(job)}/${buildNumber}/execution/node/${nodeId}/wfapi/describe`,
+    return this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/execution/node/${nodeId}/wfapi/describe`,
+      (path) => this._request<any>(path),
     )
   }
 
@@ -395,8 +550,10 @@ export class JenkinsClient {
     buildNumber: number | string,
     stepId: string,
   ): Promise<string> {
-    const r = await this._request<any>(
-      `${jobPath(job)}/${buildNumber}/execution/node/${stepId}/wfapi/log`,
+    const r = await this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/execution/node/${stepId}/wfapi/log`,
+      (path) => this._request<any>(path),
     )
     const raw = (r && r.text) || ""
     return raw
@@ -410,8 +567,10 @@ export class JenkinsClient {
 
   // Build parameter definitions — so a caller knows what to pass to `build --param`.
   async getJobParameters(job: string): Promise<JenkinsParameterDefinition[]> {
-    const data = await this._request<any>(
-      `${jobPath(job)}/api/json?tree=property[parameterDefinitions[name,type,description,choices,defaultParameterValue[value]]]`,
+    const data = await this._requestWithPathResolution(
+      job,
+      "/api/json?tree=property[parameterDefinitions[name,type,description,choices,defaultParameterValue[value]]]",
+      (path) => this._request<any>(path),
     )
     const defs = (data?.property || []).flatMap(
       (p: any) => p.parameterDefinitions || [],
@@ -438,8 +597,10 @@ export class JenkinsClient {
     }
     const tree =
       "number,actions[causes[shortDescription]],changeSets[items[commitId,msg,date,author[fullName]]],culprits[fullName]"
-    const data = await this._request<any>(
-      `${jobPath(job)}/${buildNumber}/api/json?tree=${tree}`,
+    const data = await this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/api/json?tree=${tree}`,
+      (path) => this._request<any>(path),
     )
     const causes = (data.actions || [])
       .flatMap((a: any) => a.causes || [])
@@ -484,9 +645,10 @@ export class JenkinsClient {
     buildNumber: number,
     relativePath: string,
   ): Promise<Buffer> {
-    return this._request(
-      `${jobPath(job)}/${buildNumber}/artifact/${relativePath}`,
-      { as: "buffer" },
+    return this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/artifact/${relativePath}`,
+      (path) => this._request(path, { as: "buffer" }),
     )
   }
 
@@ -716,5 +878,203 @@ export class JenkinsClient {
       maybeEmit()
       pump()
     })
+  }
+
+  /**
+   * Diagnose a build failure: collect failed pipeline stages, their failing
+   * steps with log tails, test failures, and actionable hints.
+   *
+   * @param job - Job name (supports nested/multibranch paths)
+   * @param build - Build number, or "lastBuild", or omitted for latest
+   * @param opts - Options for log tailing and test limits
+   * @returns Structured diagnosis with failed stages, tests, and hints
+   */
+  async diagnoseBuild(
+    job: string,
+    build?: number | string,
+    opts: DiagnoseBuildOptions = {},
+  ): Promise<DiagnoseBuildResult> {
+    const { lines = 80, maxBytes = 16384, maxTests = 10 } = opts
+
+    // A string ("lastBuild", "lastFailedBuild") is a Jenkins permalink and
+    // goes straight into the URL; omitted means the latest build.
+    const buildInfo = await this.getBuild(job, build as number | undefined)
+    const buildNumber = buildInfo.number
+    const result = buildInfo.result ?? null
+    const url =
+      buildInfo.url ??
+      joinUrl(this.baseUrl, `${await this._getResolvedJobPath(job)}/${buildNumber}/`)
+
+    const hints: string[] = []
+    let failedStages: FailedStage[] = []
+    let tests: TestSummary | null = null
+
+    // Try to get pipeline stages (wfapi/describe)
+    let stagesData: any
+    try {
+      stagesData = await this.getPipelineStages(job, buildNumber)
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        hints.push("no pipeline stages (not a Pipeline job)")
+        stagesData = null
+      } else {
+        throw err
+      }
+    }
+
+    if (stagesData && stagesData.stages) {
+      // Walk ALL stages, not relying on order (parallel branches flatten)
+      for (const stage of stagesData.stages) {
+        const stageStatus = stage.status || ""
+        if (stageStatus !== "FAILED" && stageStatus !== "UNSTABLE") continue
+
+        // Get steps for this stage
+        let stepsData: any
+        try {
+          stepsData = await this.getStageSteps(job, buildNumber, stage.id)
+        } catch {
+          // If we can't get steps, record stage with empty steps
+          failedStages.push({
+            name: stage.name || stage.id,
+            status: stageStatus,
+            steps: [],
+          })
+          continue
+        }
+
+        const stepNodes = stepsData.stageFlowNodes || []
+        if (stepNodes.length === 0) {
+          failedStages.push({
+            name: stage.name || stage.id,
+            status: stageStatus,
+            steps: [],
+          })
+          continue
+        }
+
+        // Find first FAILED step, fall back to last step
+        let failedStep = stepNodes.find((s: any) => s.status === "FAILED")
+        if (!failedStep) failedStep = stepNodes[stepNodes.length - 1]
+
+        // Fetch log tail for the failing step
+        let logTail = ""
+        try {
+          const fullLog = await this.getStepLog(job, buildNumber, failedStep.id)
+          const logLines = fullLog.split("\n")
+          const tailLines = logLines.slice(-lines).join("\n")
+          // Cap at maxBytes (UTF-8), keeping the END
+          const encoder = new TextEncoder()
+          const encoded = encoder.encode(tailLines)
+          if (encoded.length > maxBytes) {
+            // Find the byte boundary at maxBytes, then decode from there
+            const decoder = new TextDecoder()
+            // We need to keep the END, so slice from (length - maxBytes)
+            const startByte = encoded.length - maxBytes
+            logTail = decoder.decode(encoded.slice(startByte))
+          } else {
+            logTail = tailLines
+          }
+        } catch {
+          logTail = "(log unavailable)"
+        }
+
+        failedStages.push({
+          name: stage.name || stage.id,
+          status: stageStatus,
+          steps: [
+            {
+              name: failedStep.name || failedStep.id,
+              status: failedStep.status || "UNKNOWN",
+              logTail,
+            },
+          ],
+        })
+      }
+
+      if (failedStages.length === 0 && result === "FAILURE") {
+        hints.push("no failing stage found; build result is FAILURE")
+      }
+    } else if (!stagesData) {
+      // Non-pipeline job, hints already added
+    } else {
+      hints.push("no stages data returned")
+    }
+
+    // Check if build is still running
+    if (buildInfo.building === true) {
+      hints.push("build still running")
+    }
+
+    // Fetch test report
+    try {
+      const testReport = await this.getTestReport(job, buildNumber)
+      if (testReport && testReport.suites) {
+        const failedCases: FailedTestCase[] = []
+        let totalFailed = 0
+        let totalTests = 0
+
+        for (const suite of testReport.suites) {
+          for (const tc of suite.cases || []) {
+            totalTests++
+            const tcStatus = tc.status || ""
+            if (tcStatus === "FAILED" || tcStatus === "REGRESSION") {
+              totalFailed++
+              if (failedCases.length < maxTests) {
+                const errorDetails = tc.errorDetails || null
+                const stackTrace = tc.errorStackTrace || null
+                let stackHead: string | null = null
+                if (stackTrace) {
+                  const lines = stackTrace.split("\n")
+                  stackHead = lines.slice(0, 5).join("\n")
+                }
+                failedCases.push({
+                  name: `${tc.className}.${tc.name}`,
+                  error: errorDetails,
+                  stackHead,
+                })
+              }
+            }
+          }
+        }
+
+        // If failCount is present, prefer it
+        if (typeof testReport.failCount === "number") {
+          totalFailed = testReport.failCount
+        }
+        if (typeof testReport.totalCount === "number") {
+          totalTests = testReport.totalCount
+        } else if (
+          typeof testReport.failCount === "number" &&
+          typeof testReport.passCount === "number" &&
+          typeof testReport.skipCount === "number"
+        ) {
+          totalTests =
+            testReport.failCount + testReport.passCount + testReport.skipCount
+        }
+
+        tests = {
+          failed: totalFailed,
+          total: totalTests,
+          first: failedCases,
+        }
+      }
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        tests = null
+      } else {
+        // Other errors propagate
+        throw err
+      }
+    }
+
+    return {
+      job,
+      build: buildNumber,
+      result,
+      url,
+      failedStages,
+      tests,
+      hints,
+    }
   }
 }
