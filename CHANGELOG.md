@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.4.0 — 2026-11-09
+
+### Highlights
+
+- **Test-runner failures are now caught as error lines.** The default patterns match `Some tests failed` and `N failed` (N ≥ 1) at line start, so steps that run tests remotely and print only a summary no longer come back empty. ([fcdaa2f](https://github.com/kud/jenkins/commit/fcdaa2fffe364940f0ce31061af3f5e1c9221b14))
+- **Failing steps gain `reportLinks`**, the URLs printed as `Report Link: …` or `report: …`, deduplicated and in order, or `null` when there is no log. `findReportLinks` is exported. ([fcdaa2f](https://github.com/kud/jenkins/commit/fcdaa2fffe364940f0ce31061af3f5e1c9221b14))
+
+---
+
 ## 2.3.0 — 2026-11-09
 
 ### Highlights
