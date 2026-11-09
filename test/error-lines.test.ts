@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { findErrorLines, findReportLinks } from "../src/error-lines.js"
+import { cleanStepLog, findErrorLines, findReportLinks } from "../src/error-lines.js"
 import { JenkinsClient } from "../src/jenkins-client.js"
 
 // The shape that hid the real failure: the error sits mid-log, and the tail is
@@ -110,4 +110,27 @@ test("findReportLinks pulls report URLs out of a step log", () => {
     "http://ci.example.com/artifact/report/index.html",
   ])
   assert.deepEqual(findReportLinks("nothing"), [])
+})
+
+test("cleanStepLog removes ANSI escapes and bare colour codes", () => {
+  const esc = "\x1b[31m\x1b[1mError\x1b[22m: lockfile entry no longer resolves\x1b[39m"
+  const bare = "[31m[1mError[22m: lockfile entry no longer resolves[39m"
+  assert.equal(cleanStepLog(esc), "Error: lockfile entry no longer resolves")
+  assert.equal(cleanStepLog(bare), "Error: lockfile entry no longer resolves")
+  assert.equal(cleanStepLog("array[0] stays"), "array[0] stays")
+})
+
+test("coloured test-runner failures are found once cleaned", () => {
+  const log = [
+    "[41m[1m FAIL [22m[49m src/cart.test.ts > applies the coupon",
+    "[31m[1mError[22m: expected 3 to be 4[39m",
+    "",
+    "[31m⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯[39m",
+    " Test Files  1 failed | 4 passed (5)",
+  ].join("\n")
+  const blocks = findErrorLines(cleanStepLog(log))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].text[0], " FAIL  src/cart.test.ts > applies the coupon")
+  assert.ok(blocks[0].text.includes("Error: expected 3 to be 4"))
+  assert.equal(findErrorLines("Failed Tests 0").length, 0)
 })

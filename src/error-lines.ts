@@ -1,4 +1,14 @@
 import type { ErrorBlock } from "./types.js"
+import { sanitizeLogChunk } from "./log-sanitizer.js"
+
+// SGR colour codes whose ESC byte was lost on the way (Jenkins strips it from
+// some step logs), leaving "[31m[1mError[22m:" in the text.
+const BARE_SGR = /\[(?:\d{1,3}(?:;\d{1,3})*)?m/g
+
+// A step log as plain text: ANSI escapes, bare colour codes and stray control
+// characters removed, so patterns match what a person would read.
+export const cleanStepLog = (log: string): string =>
+  sanitizeLogChunk(log).replace(BARE_SGR, "")
 
 // Conservative on purpose: a bare `FAILED` is printed in harmless places by
 // Jenkins and npm, so it only counts at the start of a line.
@@ -10,6 +20,8 @@ export const DEFAULT_ERROR_PATTERNS: RegExp[] = [
   // Runner summaries, for steps whose details live elsewhere (a remote runner)
   /\bSome tests failed\b/,
   /^\s*[1-9]\d* failed\b/,
+  /^\s*FAIL\b/,
+  /\bFailed Tests [1-9]/,
 ]
 
 const REPORT_LINK = /\breport(?:\s+link)?\s*:\s*(https?:\/\/\S+)/i
