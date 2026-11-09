@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.3.0 — 2026-11-09
+
+### Highlights
+
+- **`diagnoseBuild` now shows the real error even when the log tail is upload noise.** Each failing step gains `errorLines` (matches with two lines of context, last five blocks, 4 KB cap) and `logLineCount`; `errorLines` is `[]` when nothing matched and `null` when there is no log. ([c973c1c](https://github.com/kud/jenkins/commit/c973c1c66a75f154808258ce6a75551ebd5a88df))
+- **New `errorPatterns` option** replaces the conservative defaults (`Error:`, `failed:`, `✘`, `FAILED` at line start), and `findErrorLines` and `DEFAULT_ERROR_PATTERNS` are now exported. ([c973c1c](https://github.com/kud/jenkins/commit/c973c1c66a75f154808258ce6a75551ebd5a88df))
+
+<details>
+<summary>Internal (2 commits)</summary>
+
+- Config tests no longer race on CI runners that set `XDG_CONFIG_HOME`, and the error-line tests use realistic failure fixtures. ([8054624](https://github.com/kud/jenkins/commit/805462459ccf3791f523c86562aa83a5fe9fa280), [7385075](https://github.com/kud/jenkins/commit/7385075f39c90f4aa1d76faecf978dcc156a35cd))
+
+</details>
+
+---
+
 ## 2.2.0 — 2026-11-09
 
 ### Highlights
