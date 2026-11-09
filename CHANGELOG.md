@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.2.0 — 2026-11-09
+
+### Highlights
+
+- **New `JenkinsClient.diagnoseBuild(job, build?, opts)`** returns the failed stages with the failing step's log tail (80 lines or 16 KB by default), the first failed tests and hints, so a red build can be understood in one call. ([1e21b4a](https://github.com/kud/jenkins/commit/1e21b4ae94a8f6f3b2e6de1208a7abd77f7fdc10))
+- **Multibranch branch names containing `/` now resolve**, such as `acme/api-gateway/feature/login`. On a 404 the client walks the folder hierarchy and caches the result. ([1e21b4a](https://github.com/kud/jenkins/commit/1e21b4ae94a8f6f3b2e6de1208a7abd77f7fdc10))
+
+---
+
 ## 2.1.0 — 2026-08-18
 
 ### Highlights
