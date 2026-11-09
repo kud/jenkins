@@ -8,6 +8,7 @@ import path from 'path';
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'jenkins-cli-home-'));
 process.env.HOME = tempHome; // posix
 process.env.USERPROFILE = tempHome; // windows fallback
+delete process.env.XDG_CONFIG_HOME; // CI runners set it, which would share one config file across test files
 
 const cfgMod = await import("../src/config.js");
 const { addServer, listServers, useServer, removeServer, loadConfig } = cfgMod;

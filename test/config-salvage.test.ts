@@ -10,6 +10,7 @@ const tempHome = fs.mkdtempSync(
 )
 process.env.HOME = tempHome
 process.env.USERPROFILE = tempHome
+delete process.env.XDG_CONFIG_HOME
 
 // …and an isolated environment. resolveConfig merges JENKINS_* over the stored
 // file, so a developer with a real Jenkins configured would otherwise see their
