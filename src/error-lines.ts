@@ -7,7 +7,24 @@ export const DEFAULT_ERROR_PATTERNS: RegExp[] = [
   /\bfailed:/i,
   /✘/,
   /^\s*FAILED\b/,
+  // Runner summaries, for steps whose details live elsewhere (a remote runner)
+  /\bSome tests failed\b/,
+  /^\s*[1-9]\d* failed\b/,
 ]
+
+const REPORT_LINK = /\breport(?:\s+link)?\s*:\s*(https?:\/\/\S+)/i
+
+// URLs a step prints as its report ("Report Link: https://…", "report: https://…"),
+// in order, without duplicates. A remote runner's step log often holds no
+// error at all, only this pointer to where the failure is.
+export const findReportLinks = (log: string): string[] => {
+  const links: string[] = []
+  for (const line of log.split("\n")) {
+    const url = REPORT_LINK.exec(line)?.[1]
+    if (url && !links.includes(url)) links.push(url)
+  }
+  return links
+}
 
 export interface FindErrorLinesOptions {
   patterns?: RegExp[]

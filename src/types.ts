@@ -81,6 +81,8 @@ export interface FailedStep {
   // [] when the log was scanned and nothing matched, null when there was no log.
   errorLines: ErrorBlock[] | null
   logLineCount: number | null
+  // Report URLs the step printed; null when there was no log
+  reportLinks: string[] | null
 }
 
 export interface FailedStage {

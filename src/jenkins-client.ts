@@ -13,7 +13,7 @@ import {
   TestSummary,
   FailedTestCase,
 } from "./types.js"
-import { findErrorLines } from "./error-lines.js"
+import { findErrorLines, findReportLinks } from "./error-lines.js"
 
 const getFetch = () => globalThis.fetch as typeof fetch
 const joinUrl = (base: string, path: string): string =>
@@ -967,11 +967,13 @@ export class JenkinsClient {
         let logTail = ""
         let errorLines: ErrorBlock[] | null = null
         let logLineCount: number | null = null
+        let reportLinks: string[] | null = null
         try {
           const fullLog = await this.getStepLog(job, buildNumber, failedStep.id)
           const logLines = fullLog.split("\n")
           logLineCount = logLines.length
           errorLines = findErrorLines(fullLog, { patterns: errorPatterns })
+          reportLinks = findReportLinks(fullLog)
           const tailLines = logLines.slice(-lines).join("\n")
           // Cap at maxBytes (UTF-8), keeping the END
           const encoder = new TextEncoder()
@@ -999,6 +1001,7 @@ export class JenkinsClient {
               logTail,
               errorLines,
               logLineCount,
+              reportLinks,
             },
           ],
         })

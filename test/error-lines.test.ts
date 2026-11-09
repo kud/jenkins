@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { findErrorLines } from "../src/error-lines.js"
+import { findErrorLines, findReportLinks } from "../src/error-lines.js"
 import { JenkinsClient } from "../src/jenkins-client.js"
 
 // The shape that hid the real failure: the error sits mid-log, and the tail is
@@ -83,4 +83,31 @@ test("diagnoseBuild returns errorLines and the log's line count", async () => {
   assert.ok(step.errorLines![0].text.some((l) => l.includes("Missing cart state")))
   assert.ok(step.logTail.includes("s3://"))
   assert.equal(d.tests, null)
+})
+
+test("a remote runner's summary counts as an error line", () => {
+  const log = [
+    "[10:02] Report Link: https://reports.example.com/run/42/index.html#failed",
+    "[10:02] Framework execution completed in 1428 seconds",
+    "[10:02] Some tests failed.",
+  ].join("\n")
+  const blocks = findErrorLines(log)
+  assert.equal(blocks.length, 1)
+  assert.ok(blocks[0].text.at(-1)!.includes("Some tests failed."))
+  assert.equal(findErrorLines("  3 failed\n  0 failed\n").length, 1)
+  assert.deepEqual(findErrorLines("  0 failed\n  12 passed"), [])
+})
+
+test("findReportLinks pulls report URLs out of a step log", () => {
+  const log = [
+    "Report Link: https://reports.example.com/run/42/index.html#failed",
+    "html report: http://ci.example.com/artifact/report/index.html",
+    "Report Link: https://reports.example.com/run/42/index.html#failed",
+    "no link here, just the word report",
+  ].join("\n")
+  assert.deepEqual(findReportLinks(log), [
+    "https://reports.example.com/run/42/index.html#failed",
+    "http://ci.example.com/artifact/report/index.html",
+  ])
+  assert.deepEqual(findReportLinks("nothing"), [])
 })
