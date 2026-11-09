@@ -12,9 +12,9 @@ const uploads = Array.from(
 const e2eLog = [
   "Running 14 tests using 2 workers",
   "  ✓ cart adds an item (1.2s)",
-  "  ✘ checkout saves the tax form (4.1s)",
-  "    saveTaxForm failed: 400",
-  '    {"message":"Missing payee state: tax_eligibility"}',
+  "  ✘ checkout applies the coupon (4.1s)",
+  "    applyCoupon failed: 400",
+  '    {"message":"Missing cart state: coupon_window"}',
   "  ✓ cart removes an item (0.9s)",
   "  1 failed",
   ...uploads,
@@ -24,8 +24,8 @@ test("findErrorLines finds the failure above the upload noise", () => {
   const blocks = findErrorLines(e2eLog)
   assert.equal(blocks.length, 1)
   assert.equal(blocks[0].line, 1)
-  assert.ok(blocks[0].text.some((l) => l.includes("Missing payee state")))
-  assert.ok(blocks[0].text.some((l) => l.includes("saveTaxForm failed:")))
+  assert.ok(blocks[0].text.some((l) => l.includes("Missing cart state")))
+  assert.ok(blocks[0].text.some((l) => l.includes("applyCoupon failed:")))
 })
 
 test("findErrorLines merges overlapping blocks and keeps the last five", () => {
@@ -80,7 +80,7 @@ test("diagnoseBuild returns errorLines and the log's line count", async () => {
   const d = await new JenkinsClient("http://jenkins", "u", "t").diagnoseBuild("app", 7)
   const step = d.failedStages[0].steps[0]
   assert.equal(step.logLineCount, 127)
-  assert.ok(step.errorLines![0].text.some((l) => l.includes("Missing payee state")))
+  assert.ok(step.errorLines![0].text.some((l) => l.includes("Missing cart state")))
   assert.ok(step.logTail.includes("s3://"))
   assert.equal(d.tests, null)
 })
