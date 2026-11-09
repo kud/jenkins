@@ -1,0 +1,86 @@
+import test from "node:test"
+import assert from "node:assert/strict"
+import { findErrorLines } from "../src/error-lines.js"
+import { JenkinsClient } from "../src/jenkins-client.js"
+
+// The shape that hid the real failure: the error sits mid-log, and the tail is
+// nothing but artefact uploads.
+const uploads = Array.from(
+  { length: 120 },
+  (_, i) => `Uploaded report/data/${i}.png to s3://acme-ci-artifacts/run-42/${i}.png`,
+)
+const e2eLog = [
+  "Running 14 tests using 2 workers",
+  "  ✓ cart adds an item (1.2s)",
+  "  ✘ checkout saves the tax form (4.1s)",
+  "    saveTaxForm failed: 400",
+  '    {"message":"Missing payee state: tax_eligibility"}',
+  "  ✓ cart removes an item (0.9s)",
+  "  1 failed",
+  ...uploads,
+].join("\n")
+
+test("findErrorLines finds the failure above the upload noise", () => {
+  const blocks = findErrorLines(e2eLog)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].line, 1)
+  assert.ok(blocks[0].text.some((l) => l.includes("Missing payee state")))
+  assert.ok(blocks[0].text.some((l) => l.includes("saveTaxForm failed:")))
+})
+
+test("findErrorLines merges overlapping blocks and keeps the last five", () => {
+  const log = Array.from({ length: 200 }, (_, i) =>
+    i % 20 === 0 ? `Error: boom ${i}` : `line ${i}`,
+  ).join("\n")
+  const blocks = findErrorLines(log)
+  assert.equal(blocks.length, 5)
+  assert.equal(blocks[4].text[2], "Error: boom 180")
+  assert.equal(blocks[4].line, 179)
+
+  const close = findErrorLines("a\nError: one\nb\nError: two\nc")
+  assert.equal(close.length, 1)
+  assert.deepEqual(close[0].text, ["a", "Error: one", "b", "Error: two", "c"])
+})
+
+test("findErrorLines ignores a bare FAILED mid-line and returns [] on a clean log", () => {
+  assert.deepEqual(findErrorLines("npm notice: 0 FAILED checks\nall good"), [])
+  assert.equal(findErrorLines("x\n  FAILED tests/cart.spec.ts\ny").length, 1)
+})
+
+test("findErrorLines caps the total size by dropping the earliest blocks", () => {
+  const big = "x".repeat(1500)
+  const log = [1, 2, 3, 4].map((n) => `Error: ${n} ${big}`).join("\n\n\n\n\n")
+  const blocks = findErrorLines(log, { maxBytes: 4096 })
+  assert.ok(blocks.length < 4)
+  assert.ok(blocks.at(-1)!.text.some((l) => l.startsWith("Error: 4")))
+})
+
+test("errorPatterns replaces the defaults", () => {
+  assert.deepEqual(findErrorLines("Error: x", { patterns: [/BOOM/] }), [])
+  assert.equal(findErrorLines("BOOM", { patterns: [/BOOM/] }).length, 1)
+})
+
+test("diagnoseBuild returns errorLines and the log's line count", async () => {
+  const json = (status: number, body: any) =>
+    ({
+      ok: status < 300,
+      status,
+      statusText: "X",
+      headers: { get: (k: string) => (k === "content-type" ? "application/json" : null) },
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response
+  global.fetch = (async (url: string) => {
+    if (url.endsWith("/job/app/7/api/json")) return json(200, { number: 7, result: "FAILURE" })
+    if (url.endsWith("/7/wfapi/describe")) return json(200, { stages: [{ id: "3", name: "E2E", status: "FAILED" }] })
+    if (url.endsWith("/execution/node/3/wfapi/describe")) return json(200, { stageFlowNodes: [{ id: "4", name: "Shell Script", status: "FAILED" }] })
+    if (url.endsWith("/execution/node/4/wfapi/log")) return json(200, { text: e2eLog })
+    return json(404, {})
+  }) as any
+  const d = await new JenkinsClient("http://jenkins", "u", "t").diagnoseBuild("app", 7)
+  const step = d.failedStages[0].steps[0]
+  assert.equal(step.logLineCount, 127)
+  assert.ok(step.errorLines![0].text.some((l) => l.includes("Missing payee state")))
+  assert.ok(step.logTail.includes("s3://"))
+  assert.equal(d.tests, null)
+})

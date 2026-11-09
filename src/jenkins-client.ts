@@ -9,9 +9,11 @@ import {
   DiagnoseBuildResult,
   FailedStage,
   FailedStep,
+  ErrorBlock,
   TestSummary,
   FailedTestCase,
 } from "./types.js"
+import { findErrorLines } from "./error-lines.js"
 
 const getFetch = () => globalThis.fetch as typeof fetch
 const joinUrl = (base: string, path: string): string =>
@@ -894,7 +896,12 @@ export class JenkinsClient {
     build?: number | string,
     opts: DiagnoseBuildOptions = {},
   ): Promise<DiagnoseBuildResult> {
-    const { lines = 80, maxBytes = 16384, maxTests = 10 } = opts
+    const {
+      lines = 80,
+      maxBytes = 16384,
+      maxTests = 10,
+      errorPatterns,
+    } = opts
 
     // A string ("lastBuild", "lastFailedBuild") is a Jenkins permalink and
     // goes straight into the URL; omitted means the latest build.
@@ -958,9 +965,13 @@ export class JenkinsClient {
 
         // Fetch log tail for the failing step
         let logTail = ""
+        let errorLines: ErrorBlock[] | null = null
+        let logLineCount: number | null = null
         try {
           const fullLog = await this.getStepLog(job, buildNumber, failedStep.id)
           const logLines = fullLog.split("\n")
+          logLineCount = logLines.length
+          errorLines = findErrorLines(fullLog, { patterns: errorPatterns })
           const tailLines = logLines.slice(-lines).join("\n")
           // Cap at maxBytes (UTF-8), keeping the END
           const encoder = new TextEncoder()
@@ -986,6 +997,8 @@ export class JenkinsClient {
               name: failedStep.name || failedStep.id,
               status: failedStep.status || "UNKNOWN",
               logTail,
+              errorLines,
+              logLineCount,
             },
           ],
         })

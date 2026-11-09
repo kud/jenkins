@@ -63,12 +63,24 @@ export interface DiagnoseBuildOptions {
   lines?: number
   maxBytes?: number
   maxTests?: number
+  // Replaces the default error patterns used for `errorLines`.
+  errorPatterns?: RegExp[]
+}
+
+export interface ErrorBlock {
+  // 1-based line number of the block's first line in the step log
+  line: number
+  text: string[]
 }
 
 export interface FailedStep {
   name: string
   status: string
   logTail: string
+  // Error-looking lines from the whole step log with ±2 lines of context:
+  // [] when the log was scanned and nothing matched, null when there was no log.
+  errorLines: ErrorBlock[] | null
+  logLineCount: number | null
 }
 
 export interface FailedStage {
