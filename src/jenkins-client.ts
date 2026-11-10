@@ -88,17 +88,27 @@ export class JenkinsClient {
   // The fields stay typed `string` and default to `""` rather than becoming
   // optional: `client.user` is public, and widening it to `string | undefined`
   // would be a breaking change for consumers over a case they do not have.
+  //
+  // `auth.bearer` sends `Authorization: Bearer <token>` instead, for a Jenkins
+  // behind an OIDC or token plugin, and wins over a user and token when both
+  // are given, so a configuration naming both cannot quietly fall back to Basic.
   constructor(
     baseUrl: string,
     user = "",
     token = "",
-    opts: { timeout?: number; retries?: number; retryDelay?: number } = {},
+    opts: {
+      timeout?: number
+      retries?: number
+      retryDelay?: number
+      auth?: { bearer: string }
+    } = {},
   ) {
     this.baseUrl = baseUrl
     this.user = user
     this.token = token
-    this.authHeader =
-      user && token
+    this.authHeader = opts.auth?.bearer
+      ? `Bearer ${opts.auth.bearer}`
+      : user && token
         ? "Basic " + Buffer.from(`${user}:${token}`).toString("base64")
         : ""
     const timeout = opts.timeout ?? 15000
@@ -204,21 +214,67 @@ export class JenkinsClient {
     }
   }
 
+  // ⚠ A CRUMB BELONGS TO THE WEB SESSION IT WAS ISSUED IN. Jenkins binds it to
+  // the session cookie set on the crumbIssuer response, so a write must carry
+  // that cookie alongside the crumb or it is refused with 403 — reads keep
+  // working, which made the client look healthy while every trigger failed.
+  // API-token Basic auth is exempt from the check; bearer setups usually are
+  // not. The crumb and cookie are kept together, and _write re-issues both
+  // once when Jenkins expires the session (a 403 on a crumbed write).
+  private _crumb: JenkinsCrumb | null = null
+  private _cookie = ""
+
   private async _getCrumb(): Promise<JenkinsCrumb | null> {
+    if (this._crumb) return this._crumb
     try {
-      const c = await this._request<JenkinsCrumb>("crumbIssuer/api/json")
-      if (c && typeof c === "object" && (c.crumb || c.crumbRequestField))
-        return c
-      return null
+      const res = await this._fetchWithTimeout(
+        joinUrl(this.baseUrl, "crumbIssuer/api/json"),
+        { headers: { ...this.authHeaders } },
+      )
+      if (!res.ok) return null
+      const headers = res.headers as Headers & { getSetCookie?: () => string[] }
+      const setCookies =
+        typeof headers.getSetCookie === "function"
+          ? headers.getSetCookie()
+          : [headers.get("set-cookie")].filter((c): c is string => !!c)
+      const c = (await res.json()) as JenkinsCrumb
+      if (!c || typeof c !== "object" || !(c.crumb || c.crumbRequestField))
+        return null
+      this._cookie = setCookies.map((s) => s.split(";")[0].trim()).join("; ")
+      this._crumb = c
+      return c
     } catch {
       return null
     }
   }
 
+  // Every mutating request: crumb and session cookie attached, one re-issue
+  // and retry when a crumbed write comes back 403. Resolves with the response
+  // whatever its status; callers classify it.
+  private async _write(url: string, init: RequestInit = {}): Promise<Response> {
+    const send = async (crumb: JenkinsCrumb | null) => {
+      const headers: Record<string, string> = {
+        ...this.authHeaders,
+        ...((init.headers as Record<string, string>) || {}),
+      }
+      if (crumb?.crumb && crumb.crumbRequestField)
+        headers[crumb.crumbRequestField] = crumb.crumb
+      if (crumb && this._cookie) headers.Cookie = this._cookie
+      return this._fetchWithTimeout(url, { ...init, method: "POST", headers })
+    }
+    const crumb = await this._getCrumb()
+    const res = await send(crumb)
+    if (res.status !== 403 || !crumb) return res
+    this._crumb = null
+    this._cookie = ""
+    return send(await this._getCrumb())
+  }
+
   // ⚠ WRITES NEVER RETRY. _request retries 5xx when `retries` is set, which is
   // safe for reads and wrong for a POST: a createItem that timed out may have
-  // landed, and a second attempt then fails on a job that now exists. Throws
-  // HttpError on 4xx/5xx so _requestWithPathResolution can still re-route a 404.
+  // landed, and a second attempt then fails on a job that now exists. The one
+  // exception is _write's crumb re-issue: a 403 was refused, so nothing landed.
+  // Throws HttpError on 4xx/5xx so _requestWithPathResolution can still re-route a 404.
   private async _post(
     path: string,
     opts: {
@@ -227,16 +283,12 @@ export class JenkinsClient {
       redirect?: RequestRedirect
     } = {},
   ): Promise<Response> {
-    const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { ...this.authHeaders }
+    const headers: Record<string, string> = {}
     if (opts.contentType) headers["Content-Type"] = opts.contentType
-    if (crumb?.crumb && crumb.crumbRequestField)
-      headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(this.baseUrl, path)
     let res: Response
     try {
-      res = await this._fetchWithTimeout(url, {
-        method: "POST",
+      res = await this._write(url, {
         headers,
         body: opts.body,
         redirect: opts.redirect,
@@ -287,6 +339,27 @@ export class JenkinsClient {
       404,
       `HTTP 404 Not Found: ${joinUrl(this.baseUrl, plainPath)}`,
     )
+  }
+
+  /**
+   * The REST path for a job ("job/org/job/repo/job/feature%2Fx"), with the
+   * slashes of a multibranch branch name kept inside one segment.
+   *
+   * For callers building their own requests with `tree()`: `jobPath()` is
+   * right for every job outside a multibranch project and costs nothing, so try
+   * it first and call this on its 404. It walks the hierarchy, one request per
+   * segment, and the answer is cached for the life of the client.
+   *
+   * @example
+   * const path = await client.resolveJobPath("repo/feature/x")
+   * await client.tree(`${path}/api/json`, "builds[number,result]{0,5}")
+   */
+  async resolveJobPath(job: string): Promise<string> {
+    const cached = this._resolvedPathCache.get(job)
+    if (cached) return cached
+    const resolved = await this._resolveMultibranchPath(job)
+    if (resolved !== jobPath(job)) this._resolvedPathCache.set(job, resolved)
+    return resolved
   }
 
   /**
@@ -498,13 +571,9 @@ export class JenkinsClient {
   async triggerBuild(
     job: string,
   ): Promise<{ queued: true; location: string | null }> {
-    const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { ...this.authHeaders }
-    if (crumb?.crumb && crumb.crumbRequestField)
-      headers[crumb.crumbRequestField] = crumb.crumb
     const resolvedPath = await this._getResolvedJobPath(job)
     const url = joinUrl(this.baseUrl, `${resolvedPath}/build`)
-    const res = await this._fetchWithTimeout(url, { method: "POST", headers })
+    const res = await this._write(url)
     if ([200, 201, 202].includes(res.status))
       return { queued: true, location: res.headers.get("location") }
     throw new Error(`Trigger failed: ${res.status} ${res.statusText}`)
@@ -514,22 +583,12 @@ export class JenkinsClient {
     job: string,
     params: Record<string, string> = {},
   ): Promise<{ queued: true; location: string | null }> {
-    const crumb = await this._getCrumb()
-    const headers: Record<string, string> = {
-      ...this.authHeaders,
-      "Content-Type": "application/x-www-form-urlencoded",
-    }
-    if (crumb?.crumb && crumb.crumbRequestField)
-      headers[crumb.crumbRequestField] = crumb.crumb
+    const headers = { "Content-Type": "application/x-www-form-urlencoded" }
     const body = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) body.append(k, v)
     const resolvedPath = await this._getResolvedJobPath(job)
     const url = joinUrl(this.baseUrl, `${resolvedPath}/buildWithParameters`)
-    const res = await this._fetchWithTimeout(url, {
-      method: "POST",
-      headers,
-      body: body.toString(),
-    })
+    const res = await this._write(url, { headers, body: body.toString() })
     if ([200, 201, 202].includes(res.status))
       return { queued: true, location: res.headers.get("location") }
     throw new Error(
@@ -541,13 +600,9 @@ export class JenkinsClient {
     job: string,
     buildNumber: number,
   ): Promise<{ stopped: true }> {
-    const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { ...this.authHeaders }
-    if (crumb?.crumb && crumb.crumbRequestField)
-      headers[crumb.crumbRequestField] = crumb.crumb
     const resolvedPath = await this._getResolvedJobPath(job)
     const url = joinUrl(this.baseUrl, `${resolvedPath}/${buildNumber}/stop`)
-    const res = await this._fetchWithTimeout(url, { method: "POST", headers })
+    const res = await this._write(url)
     if (![200, 201, 202].includes(res.status))
       throw new Error(`Stop failed: ${res.status} ${res.statusText}`)
     return { stopped: true }
@@ -559,12 +614,8 @@ export class JenkinsClient {
   }
 
   async cancelQueueItem(id: number | string): Promise<{ cancelled: true }> {
-    const crumb = await this._getCrumb()
-    const headers: Record<string, string> = { ...this.authHeaders }
-    if (crumb?.crumb && crumb.crumbRequestField)
-      headers[crumb.crumbRequestField] = crumb.crumb
     const url = joinUrl(this.baseUrl, `queue/cancelItem?id=${id}`)
-    const res = await this._fetchWithTimeout(url, { method: "POST", headers })
+    const res = await this._write(url)
     if (![200, 201, 202, 302].includes(res.status))
       throw new Error(`Cancel queue failed: ${res.status} ${res.statusText}`)
     return { cancelled: true }
