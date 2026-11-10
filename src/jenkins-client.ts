@@ -12,12 +12,14 @@ import {
   ErrorBlock,
   TestSummary,
   FailedTestCase,
+  JenkinsNode,
+  JenkinsNodeDetail,
+  JenkinsView,
+  JenkinsViewDetail,
+  JenkinsSystemInfo,
+  JenkinsPlugin,
 } from "./types.js"
-import {
-  cleanStepLog,
-  findErrorLines,
-  findReportLinks,
-} from "./error-lines.js"
+import { cleanStepLog, findErrorLines, findReportLinks } from "./error-lines.js"
 
 const getFetch = () => globalThis.fetch as typeof fetch
 const joinUrl = (base: string, path: string): string =>
@@ -55,6 +57,16 @@ interface InternalRequestOptions {
 // programming error, and must not be able to look like an absence.
 export const jobPath = (job: string): string =>
   "job/" + job.split("/").filter(Boolean).map(encodeURIComponent).join("/job/")
+
+// Split a full item name into the folder that will hold it and its own name.
+// createItem is posted to the parent folder, never to the item's own path.
+const splitItemName = (fullName: string): { parent: string; name: string } => {
+  const segments = fullName.split("/").filter(Boolean)
+  if (segments.length === 0)
+    throw new Error("Job name must be a non-empty Jenkins full name")
+  const name = segments.pop() as string
+  return { parent: segments.join("/"), name }
+}
 
 export class JenkinsClient {
   baseUrl: string
@@ -203,6 +215,46 @@ export class JenkinsClient {
     }
   }
 
+  // ⚠ WRITES NEVER RETRY. _request retries 5xx when `retries` is set, which is
+  // safe for reads and wrong for a POST: a createItem that timed out may have
+  // landed, and a second attempt then fails on a job that now exists. Throws
+  // HttpError on 4xx/5xx so _requestWithPathResolution can still re-route a 404.
+  private async _post(
+    path: string,
+    opts: {
+      body?: string
+      contentType?: string
+      redirect?: RequestRedirect
+    } = {},
+  ): Promise<Response> {
+    const crumb = await this._getCrumb()
+    const headers: Record<string, string> = { ...this.authHeaders }
+    if (opts.contentType) headers["Content-Type"] = opts.contentType
+    if (crumb?.crumb && crumb.crumbRequestField)
+      headers[crumb.crumbRequestField] = crumb.crumb
+    const url = joinUrl(this.baseUrl, path)
+    let res: Response
+    try {
+      res = await this._fetchWithTimeout(url, {
+        method: "POST",
+        headers,
+        body: opts.body,
+        redirect: opts.redirect,
+      })
+    } catch (e) {
+      throw new HttpError(0, `Request failed ${url}: ${(e as Error).message}`)
+    }
+    if (res.status >= 400) {
+      const body = (await res.text()).slice(0, 300)
+      throw new HttpError(
+        res.status,
+        `HTTP ${res.status} ${res.statusText}: ${body}`,
+        body,
+      )
+    }
+    return res
+  }
+
   /**
    * Try a request with the plain jobPath. On 404, resolve the true path by
    * walking the job hierarchy and checking _class at each level. Cache the
@@ -231,7 +283,10 @@ export class JenkinsClient {
     }
 
     // Resolution found nothing different; surface original 404
-    throw new HttpError(404, `HTTP 404 Not Found: ${joinUrl(this.baseUrl, plainPath)}`)
+    throw new HttpError(
+      404,
+      `HTTP 404 Not Found: ${joinUrl(this.baseUrl, plainPath)}`,
+    )
   }
 
   /**
@@ -346,8 +401,10 @@ export class JenkinsClient {
       if (!number) throw new Error("No lastBuild found")
       buildNumber = number
     }
-    return this._requestWithPathResolution(job, `/${buildNumber}/api/json`, (path) =>
-      this._request<JenkinsBuild>(path),
+    return this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/api/json`,
+      (path) => this._request<JenkinsBuild>(path),
     )
   }
 
@@ -358,8 +415,10 @@ export class JenkinsClient {
       if (!number) throw new Error("No lastBuild found")
       buildNumber = number
     }
-    return this._requestWithPathResolution(job, `/${buildNumber}/consoleText`, (path) =>
-      this._request<string>(path),
+    return this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/consoleText`,
+      (path) => this._request<string>(path),
     )
   }
 
@@ -900,12 +959,7 @@ export class JenkinsClient {
     build?: number | string,
     opts: DiagnoseBuildOptions = {},
   ): Promise<DiagnoseBuildResult> {
-    const {
-      lines = 80,
-      maxBytes = 16384,
-      maxTests = 10,
-      errorPatterns,
-    } = opts
+    const { lines = 80, maxBytes = 16384, maxTests = 10, errorPatterns } = opts
 
     // A string ("lastBuild", "lastFailedBuild") is a Jenkins permalink and
     // goes straight into the URL; omitted means the latest build.
@@ -914,7 +968,10 @@ export class JenkinsClient {
     const result = buildInfo.result ?? null
     const url =
       buildInfo.url ??
-      joinUrl(this.baseUrl, `${await this._getResolvedJobPath(job)}/${buildNumber}/`)
+      joinUrl(
+        this.baseUrl,
+        `${await this._getResolvedJobPath(job)}/${buildNumber}/`,
+      )
 
     const hints: string[] = []
     let failedStages: FailedStage[] = []
@@ -1098,5 +1155,295 @@ export class JenkinsClient {
       tests,
       hints,
     }
+  }
+
+  // ── Job lifecycle ──────────────────────────────────────────────────────────
+
+  async getJobConfig(
+    job: string,
+  ): Promise<{ jobName: string; config: string }> {
+    const config = await this._requestWithPathResolution(
+      job,
+      "/config.xml",
+      (path) => this._request<string>(path),
+    )
+    return { jobName: job, config: String(config) }
+  }
+
+  async createJob(
+    job: string,
+    configXml: string,
+  ): Promise<{ jobName: string; created: true }> {
+    const { parent, name } = splitItemName(job)
+    const suffix = `/createItem?name=${encodeURIComponent(name)}`
+    const post = (path: string) =>
+      this._post(path, { body: configXml, contentType: "application/xml" })
+    if (parent) await this._requestWithPathResolution(parent, suffix, post)
+    else await post(suffix)
+    return { jobName: job, created: true }
+  }
+
+  // `from` carries a leading slash on purpose: Jenkins resolves it relative to
+  // the new item's parent folder otherwise, so a copy across folders silently
+  // finds the wrong source, or none. The slash forces lookup from the root.
+  async copyJob(
+    fromName: string,
+    newName: string,
+  ): Promise<{ fromName: string; newName: string; copied: true }> {
+    const source = fromName.split("/").filter(Boolean).join("/")
+    if (!source)
+      throw new Error("Job name must be a non-empty Jenkins full name")
+    const { parent, name } = splitItemName(newName)
+    const suffix =
+      `/createItem?name=${encodeURIComponent(name)}` +
+      `&mode=copy&from=${encodeURIComponent(`/${source}`)}`
+    const post = (path: string) => this._post(path)
+    if (parent) await this._requestWithPathResolution(parent, suffix, post)
+    else await post(suffix)
+    return { fromName, newName, copied: true }
+  }
+
+  async updateJobConfig(
+    job: string,
+    configXml: string,
+  ): Promise<{ jobName: string; updated: true }> {
+    await this._requestWithPathResolution(job, "/config.xml", (path) =>
+      this._post(path, { body: configXml, contentType: "application/xml" }),
+    )
+    return { jobName: job, updated: true }
+  }
+
+  // confirmRename is the POST endpoint behind the rename form; `rename` alone
+  // is the GET page, which a POST renders with a 200 and renames nothing.
+  async renameJob(
+    job: string,
+    newName: string,
+  ): Promise<{ oldName: string; newName: string; renamed: true }> {
+    await this._requestWithPathResolution(
+      job,
+      `/confirmRename?newName=${encodeURIComponent(newName)}`,
+      (path) => this._post(path),
+    )
+    this._resolvedPathCache.delete(job)
+    return { oldName: job, newName, renamed: true }
+  }
+
+  async deleteJob(job: string): Promise<{ jobName: string; deleted: true }> {
+    await this._requestWithPathResolution(job, "/doDelete", (path) =>
+      this._post(path),
+    )
+    this._resolvedPathCache.delete(job)
+    return { jobName: job, deleted: true }
+  }
+
+  async enableJob(job: string): Promise<{ jobName: string; enabled: true }> {
+    await this._requestWithPathResolution(job, "/enable", (path) =>
+      this._post(path),
+    )
+    return { jobName: job, enabled: true }
+  }
+
+  async disableJob(job: string): Promise<{ jobName: string; disabled: true }> {
+    await this._requestWithPathResolution(job, "/disable", (path) =>
+      this._post(path),
+    )
+    return { jobName: job, disabled: true }
+  }
+
+  // ── Builds ─────────────────────────────────────────────────────────────────
+
+  async deleteBuild(
+    job: string,
+    buildNumber: number,
+  ): Promise<{ jobName: string; buildNumber: number; deleted: true }> {
+    await this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/doDelete`,
+      (path) => this._post(path),
+    )
+    return { jobName: job, buildNumber, deleted: true }
+  }
+
+  // ⚠ The redirect is not followed. A followed 3xx turns an authentication
+  // bounce into a 200 HTML page that reads as a queued replay, so a 3xx is an
+  // error and success is a 2xx carrying the queue item's Location.
+  async replayBuild(
+    job: string,
+    buildNumber: number,
+    mainScript?: string,
+  ): Promise<{ jobName: string; buildNumber: number; queueUrl: string }> {
+    const res = await this._requestWithPathResolution(
+      job,
+      `/${buildNumber}/replay/rebuild`,
+      (path) =>
+        this._post(
+          path,
+          mainScript === undefined
+            ? { redirect: "manual" }
+            : {
+                redirect: "manual",
+                contentType: "application/x-www-form-urlencoded",
+                body: new URLSearchParams({ mainScript }).toString(),
+              },
+        ),
+    )
+    const location = res.headers.get("location")
+    if (res.status >= 300 || res.type === "opaqueredirect")
+      throw new Error(
+        `Replay failed: HTTP ${res.status}` +
+          (location ? `, redirects to ${location}, not followed` : ""),
+      )
+    if (!location)
+      throw new Error(
+        `Replay returned HTTP ${res.status} without a queue Location header`,
+      )
+    return { jobName: job, buildNumber, queueUrl: location }
+  }
+
+  // ── Nodes ──────────────────────────────────────────────────────────────────
+
+  async listNodes(): Promise<JenkinsNode[]> {
+    const data = await this._request<any>("computer/api/json?depth=1")
+    return (data?.computer || []).map((node: any) => {
+      const numExecutors = node.numExecutors || 0
+      const executors = Array.isArray(node.executors) ? node.executors : null
+      return {
+        name: node.displayName || "",
+        offline: node.offline || false,
+        idle: node.idle || false,
+        numExecutors,
+        busyExecutors: executors
+          ? executors.filter((e: any) => e && e.idle === false).length
+          : node.idle
+            ? 0
+            : numExecutors,
+        temporarilyOffline: node.temporarilyOffline || false,
+        offlineCauseReason: node.offlineCauseReason || "",
+      }
+    })
+  }
+
+  async getNode(nodeName: string): Promise<JenkinsNodeDetail> {
+    const data = await this._request<any>(
+      `computer/${encodeURIComponent(nodeName)}/api/json?depth=1`,
+    )
+    return {
+      name: data.displayName || nodeName,
+      offline: data.offline || false,
+      temporarilyOffline: data.temporarilyOffline || false,
+      offlineCauseReason: data.offlineCauseReason || "",
+      idle: data.idle || false,
+      numExecutors: data.numExecutors || 0,
+      assignedLabels: (data.assignedLabels || []).map((l: any) => l.name),
+      monitorData: data.monitorData || {},
+    }
+  }
+
+  async toggleNodeOffline(
+    nodeName: string,
+    offlineMessage = "",
+  ): Promise<{ nodeName: string; toggledOffline: true }> {
+    await this._post(
+      `computer/${encodeURIComponent(nodeName)}/toggleOffline?offlineMessage=${encodeURIComponent(offlineMessage)}`,
+    )
+    return { nodeName, toggledOffline: true }
+  }
+
+  // ── Views ──────────────────────────────────────────────────────────────────
+
+  async listViews(): Promise<JenkinsView[]> {
+    const data = await this.tree<any>(
+      "api/json",
+      "views[name,url,jobs[name,url]]",
+    )
+    if (!Array.isArray(data?.views)) return []
+    return data.views.map((v: any) => ({
+      name: v.name || "",
+      url: v.url || "",
+      jobs: (v.jobs || []).map((j: any) => ({ name: j.name, url: j.url })),
+    }))
+  }
+
+  async getView(viewName: string): Promise<JenkinsViewDetail> {
+    const data = await this._request<any>(
+      `view/${encodeURIComponent(viewName)}/api/json`,
+    )
+    return {
+      name: data.name || viewName,
+      url: data.url || "",
+      description: data.description || "",
+      jobs: (data.jobs || []).map((j: any) => ({
+        name: j.name,
+        url: j.url,
+        color: j.color,
+      })),
+    }
+  }
+
+  // ── System ─────────────────────────────────────────────────────────────────
+
+  async getSystemInfo(): Promise<JenkinsSystemInfo> {
+    const data = await this.tree<any>(
+      "api/json",
+      "nodeDescription,nodeName,numExecutors,mode,quietingDown,useCrumbs,useSecurity",
+    )
+    return {
+      nodeDescription: data.nodeDescription || "",
+      nodeName: data.nodeName || "",
+      numExecutors: data.numExecutors || 0,
+      mode: data.mode || "",
+      quietingDown: data.quietingDown || false,
+      useCrumbs: data.useCrumbs || false,
+      useSecurity: data.useSecurity || false,
+    }
+  }
+
+  // Jenkins reports its version only in the X-Jenkins response header.
+  async getVersion(): Promise<{ version: string }> {
+    const url = joinUrl(this.baseUrl, "api/json")
+    let res: Response
+    try {
+      res = await this._fetchWithTimeout(url, {
+        method: "HEAD",
+        headers: { ...this.authHeaders },
+      })
+    } catch (e) {
+      throw new HttpError(0, `Request failed ${url}: ${(e as Error).message}`)
+    }
+    if (!res.ok)
+      throw new HttpError(res.status, `HTTP ${res.status} ${res.statusText}`)
+    return { version: res.headers.get("x-jenkins") || "unknown" }
+  }
+
+  async getPlugins(): Promise<JenkinsPlugin[]> {
+    const data = await this.tree<any>(
+      "pluginManager/api/json",
+      "plugins[shortName,longName,version,enabled,active,hasUpdate]",
+    )
+    return (data?.plugins || []).map((p: any) => ({
+      shortName: p.shortName || "",
+      longName: p.longName || "",
+      version: p.version || "",
+      enabled: p.enabled || false,
+      active: p.active || false,
+      hasUpdate: p.hasUpdate || false,
+    }))
+  }
+
+  async quietDown(reason = ""): Promise<{ quietingDown: true }> {
+    await this._post(
+      reason ? `quietDown?reason=${encodeURIComponent(reason)}` : "quietDown",
+    )
+    return { quietingDown: true }
+  }
+
+  async cancelQuietDown(): Promise<{ quietingDown: false }> {
+    await this._post("cancelQuietDown")
+    return { quietingDown: false }
+  }
+
+  async safeRestart(): Promise<{ restarting: true }> {
+    await this._post("safeRestart")
+    return { restarting: true }
   }
 }

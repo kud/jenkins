@@ -112,3 +112,59 @@ export interface DiagnoseBuildResult {
   tests: TestSummary | null
   hints: string[]
 }
+
+export interface JenkinsNode {
+  name: string
+  offline: boolean
+  idle: boolean
+  numExecutors: number
+  busyExecutors: number
+  temporarilyOffline: boolean
+  offlineCauseReason: string
+}
+
+export interface JenkinsNodeDetail {
+  name: string
+  offline: boolean
+  temporarilyOffline: boolean
+  offlineCauseReason: string
+  idle: boolean
+  numExecutors: number
+  assignedLabels: string[]
+  monitorData: Record<string, unknown>
+}
+
+export interface JenkinsViewJob {
+  name: string
+  url: string
+  color?: string
+}
+
+export interface JenkinsView {
+  name: string
+  url: string
+  jobs: JenkinsViewJob[]
+}
+
+export interface JenkinsViewDetail extends JenkinsView {
+  description: string
+}
+
+export interface JenkinsSystemInfo {
+  nodeDescription: string
+  nodeName: string
+  numExecutors: number
+  mode: string
+  quietingDown: boolean
+  useCrumbs: boolean
+  useSecurity: boolean
+}
+
+export interface JenkinsPlugin {
+  shortName: string
+  longName: string
+  version: string
+  enabled: boolean
+  active: boolean
+  hasUpdate: boolean
+}
