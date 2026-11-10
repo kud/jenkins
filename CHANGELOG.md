@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.7.1 — 2026-11-10
+
+### Fixes
+
+- **Nested folders are now found.** Folders more than one level deep were requested by bare name at the root and missed; they now resolve from their full path. ([798773f](https://github.com/kud/jenkins/commit/798773fe60306604139be3292c0b574ab5f2a8ff))
+
+### Documentation
+
+- **User docs for the client.** New pages cover configuration, `JenkinsClient` and auth, logs, artefacts and queue, job lifecycle and admin, errors and retries, and utilities. ([4e786dc](https://github.com/kud/jenkins/commit/4e786dc6b7dc2e9ea27d1bb7d5d90fdf6ba1d2e9))
+
+---
+
 ## 2.7.0 — 2026-11-10
 
 ### Highlights
