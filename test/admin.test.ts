@@ -360,3 +360,53 @@ test("quietDown, cancelQuietDown and safeRestart post once each, never retried",
   assert.deepEqual(await c.cancelQuietDown(), { quietingDown: false })
   assert.deepEqual(await c.safeRestart(), { restarting: true })
 })
+
+// ── Search ───────────────────────────────────────────────────────────────────
+
+// Three folders deep: each level is only reachable through its full
+// `job/a/job/b/job/c` path, never through its bare name at the root.
+const nestedTree = (url: string) => {
+  const path = url.replace(/^http:\/\/jenkins\//, "").split("api/json")[0].replace(/\/$/, "")
+  const levels: Record<string, any[]> = {
+    "": [{ name: "platform" }],
+    "job/platform": [{ name: "services" }],
+    "job/platform/job/services": [{ name: "payments" }],
+    "job/platform/job/services/job/payments": [
+      { name: "api-gateway", color: "blue", jobs: [] },
+    ],
+  }
+  return path in levels ? json({ jobs: levels[path] }) : undefined
+}
+
+const folderFetches = (calls: Call[]) =>
+  calls
+    .map((c) => c.url.replace(/^http:\/\/jenkins\//, "").split("api/json")[0].replace(/\/$/, ""))
+    .filter(Boolean)
+
+test("searchJobs walks folders nested three levels deep by full path", async () => {
+  const calls = mockFetch(nestedTree)
+  const found = await client().searchJobs("api-gateway")
+  assert.deepEqual(
+    found.map((j) => j.fullName),
+    ["platform/services/payments/api-gateway"],
+  )
+  assert.deepEqual(folderFetches(calls), [
+    "job/platform",
+    "job/platform/job/services",
+    "job/platform/job/services/job/payments",
+  ])
+})
+
+test("searchJobsIncremental walks folders nested three levels deep by full path", async () => {
+  const calls = mockFetch(nestedTree)
+  const found = await client().searchJobsIncremental("api-gateway")
+  assert.deepEqual(
+    found.map((j) => j.fullName),
+    ["platform/services/payments/api-gateway"],
+  )
+  assert.deepEqual(folderFetches(calls), [
+    "job/platform",
+    "job/platform/job/services",
+    "job/platform/job/services/job/payments",
+  ])
+})

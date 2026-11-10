@@ -872,7 +872,7 @@ export class JenkinsClient {
       if (job.jobs === undefined) {
         try {
           const data = await this._request<JenkinsJob>(
-            `job/${encodeURIComponent(job.name || "")}/api/json?tree=name,url,color,jobs[name,url,color]`,
+            `${jobPath(path.join("/"))}/api/json?tree=name,url,color,jobs[name,url,color]`,
           )
           if (data && data.jobs) {
             job.jobs = data.jobs
@@ -953,7 +953,7 @@ export class JenkinsClient {
               if (job.jobs === undefined) {
                 try {
                   const data = await this._request<JenkinsJob>(
-                    `job/${encodeURIComponent(job.name || "")}/api/json?tree=name,url,color,jobs[name,url,color]`,
+                    `${jobPath(path.join("/"))}/api/json?tree=name,url,color,jobs[name,url,color]`,
                   )
                   if (data && data.jobs) {
                     job.jobs = data.jobs
