@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.6.0 — 2026-11-10
+
+### Highlights
+
+- **Manage job lifecycle from `JenkinsClient`.** New `getJobConfig`, `createJob`, `copyJob`, `updateJobConfig`, `renameJob`, `deleteJob`, `enableJob` and `disableJob` cover everything short of the Jenkins UI. ([12164d9](https://github.com/kud/jenkins/commit/12164d94234f3d1e611930a3b75623b3e5d19cb6))
+- **Build clean-up and replay.** `deleteBuild` and `replayBuild` let you prune or re-run a pipeline build without leaving code. ([12164d9](https://github.com/kud/jenkins/commit/12164d94234f3d1e611930a3b75623b3e5d19cb6))
+- **Inspect and administer the controller.** Nodes (`listNodes`, `getNode`, `toggleNodeOffline`), views (`listViews`, `getView`), system details (`getSystemInfo`, `getVersion`, `getPlugins`) and maintenance (`quietDown`, `cancelQuietDown`, `safeRestart`). ([12164d9](https://github.com/kud/jenkins/commit/12164d94234f3d1e611930a3b75623b3e5d19cb6))
+- **Multibranch-aware and safe by default.** Job-scoped calls resolve multibranch paths, and write calls never retry, so a flaky connection cannot create or delete something twice. ([12164d9](https://github.com/kud/jenkins/commit/12164d94234f3d1e611930a3b75623b3e5d19cb6))
+
+---
+
 ## 2.5.0 — 2026-11-09
 
 ### Highlights
