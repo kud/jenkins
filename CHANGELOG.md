@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.7.0 — 2026-11-10
+
+### Highlights
+
+- **Bearer token auth.** Pass `auth: { bearer }` to the `JenkinsClient` constructor to authenticate with a Bearer token; it takes precedence over user and token Basic auth. ([b82defe](https://github.com/kud/jenkins/commit/b82defed723f2cc1f6bb3e2f2e32f5ae5e210300))
+- **`resolveJobPath(job)` is now public.** It turns multibranch job names containing slashes into the right path, caches the result, and is documented in the README. ([b82defe](https://github.com/kud/jenkins/commit/b82defed723f2cc1f6bb3e2f2e32f5ae5e210300))
+
+### Fixes
+
+- **Writes survive an expired session.** The CSRF crumb is now tied to its session cookie, and every write, Bearer included, re-issues it once on a 403 instead of failing. ([b82defe](https://github.com/kud/jenkins/commit/b82defed723f2cc1f6bb3e2f2e32f5ae5e210300))
+
+---
+
 ## 2.6.0 — 2026-11-10
 
 ### Highlights
