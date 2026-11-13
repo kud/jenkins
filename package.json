@@ -34,6 +34,7 @@
     "type": "git",
     "url": "https://github.com/kud/jenkins"
   },
+  "homepage": "https://kud.io/projects/jenkins",
   "engines": {
     "node": ">=22"
   },
