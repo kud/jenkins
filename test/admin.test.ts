@@ -191,30 +191,82 @@ test("deleteBuild resolves a multibranch branch containing a slash", async () =>
   ])
 })
 
-test("replayBuild returns the queue Location and does not follow redirects", async () => {
+test("replayBuild with a script posts it to replay/run as a Stapler form", async () => {
+  const calls = mockFetch((url, opts) => {
+    if (url.endsWith("job/app/api/json?tree=nextBuildNumber"))
+      return json({ nextBuildNumber: 8 })
+    if (opts?.method === "POST" && url.endsWith("job/app/7/replay/run"))
+      return makeResponse(302, "", { location: "http://jenkins/job/app/" })
+    return undefined
+  })
+  const script =
+    'pipeline { agent any; stages { stage("x") { steps { echo "hi" } } } }'
+  const r = await client().replayBuild("app", 7, script)
+  assert.deepEqual(r, {
+    jobName: "app",
+    buildNumber: 7,
+    replayed: true,
+    expectedBuildNumber: 8,
+    jobUrl: "http://jenkins/job/app/",
+  })
+  const [post] = posts(calls)
+  assert.equal(post.url, "http://jenkins/job/app/7/replay/run")
+  assert.equal(post.opts.redirect, "manual")
+  assert.equal(
+    post.opts.headers["Content-Type"],
+    "application/x-www-form-urlencoded",
+  )
+  assert.equal(post.opts.headers["Jenkins-Crumb"], "abc")
+  const form = new URLSearchParams(post.opts.body)
+  assert.equal(form.get("mainScript"), script)
+  assert.deepEqual(JSON.parse(form.get("json")!), { mainScript: script })
+})
+
+test("replayBuild without a script re-runs the original via replay/rebuild", async () => {
   const calls = mockFetch((url, opts) =>
     opts?.method === "POST" && url.endsWith("job/app/7/replay/rebuild")
+      ? makeResponse(302, "", { location: "../.." })
+      : undefined,
+  )
+  const r = await client().replayBuild("app", 7)
+  assert.equal(r.replayed, true)
+  assert.equal(r.jobUrl, "http://jenkins/job/app/")
+  const [post] = posts(calls)
+  assert.equal(post.opts.body, undefined)
+})
+
+test("replayBuild treats a 302 to the job page as success", async () => {
+  mockFetch((url, opts) =>
+    opts?.method === "POST"
+      ? makeResponse(302, "", {
+          location: "http://jenkins/job/acme/job/web-app/job/PR-42/",
+        })
+      : undefined,
+  )
+  const r = await client().replayBuild("acme/web-app/PR-42", 3, "echo hi")
+  assert.equal(r.replayed, true)
+  assert.equal(r.jobUrl, "http://jenkins/job/acme/job/web-app/job/PR-42/")
+})
+
+test("replayBuild still accepts a 2xx carrying a queue Location", async () => {
+  mockFetch((url, opts) =>
+    opts?.method === "POST"
       ? makeResponse(201, "", { location: "http://jenkins/queue/item/99/" })
       : undefined,
   )
   const r = await client().replayBuild("app", 7, "echo hi")
-  assert.deepEqual(r, {
-    jobName: "app",
-    buildNumber: 7,
-    queueUrl: "http://jenkins/queue/item/99/",
-  })
-  const [post] = posts(calls)
-  assert.equal(post.opts.redirect, "manual")
-  assert.equal(post.opts.body, "mainScript=echo+hi")
+  assert.equal(r.queueUrl, "http://jenkins/queue/item/99/")
 })
 
-test("replayBuild treats a redirect as a failure", async () => {
+test("replayBuild treats a redirect to the login page as a failure", async () => {
   mockFetch((url, opts) =>
     opts?.method === "POST"
-      ? makeResponse(302, "", { location: "http://jenkins/login" })
+      ? makeResponse(302, "", {
+          location: "http://jenkins/login?from=%2Fjob%2Fapp",
+        })
       : undefined,
   )
-  await assert.rejects(client().replayBuild("app", 7), /redirects to/)
+  await assert.rejects(client().replayBuild("app", 7), /authentication page/)
 })
 
 test("replayBuild without a Location header fails", async () => {
@@ -366,7 +418,10 @@ test("quietDown, cancelQuietDown and safeRestart post once each, never retried",
 // Three folders deep: each level is only reachable through its full
 // `job/a/job/b/job/c` path, never through its bare name at the root.
 const nestedTree = (url: string) => {
-  const path = url.replace(/^http:\/\/jenkins\//, "").split("api/json")[0].replace(/\/$/, "")
+  const path = url
+    .replace(/^http:\/\/jenkins\//, "")
+    .split("api/json")[0]
+    .replace(/\/$/, "")
   const levels: Record<string, any[]> = {
     "": [{ name: "platform" }],
     "job/platform": [{ name: "services" }],
@@ -380,7 +435,12 @@ const nestedTree = (url: string) => {
 
 const folderFetches = (calls: Call[]) =>
   calls
-    .map((c) => c.url.replace(/^http:\/\/jenkins\//, "").split("api/json")[0].replace(/\/$/, ""))
+    .map((c) =>
+      c.url
+        .replace(/^http:\/\/jenkins\//, "")
+        .split("api/json")[0]
+        .replace(/\/$/, ""),
+    )
     .filter(Boolean)
 
 test("searchJobs walks folders nested three levels deep by full path", async () => {

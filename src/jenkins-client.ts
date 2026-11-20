@@ -1315,40 +1315,87 @@ export class JenkinsClient {
     return { jobName: job, buildNumber, deleted: true }
   }
 
-  // ⚠ The redirect is not followed. A followed 3xx turns an authentication
-  // bounce into a 200 HTML page that reads as a queued replay, so a 3xx is an
-  // error and success is a 2xx carrying the queue item's Location.
+  // ⚠ TWO ENDPOINTS, AND BOTH ANSWER WITH A REDIRECT. Jenkins' ReplayAction
+  // has `rebuild`, which re-runs the original scripts and ignores any form
+  // field, and `run`, which reads a Stapler form: `mainScript` inside the
+  // `json` parameter, plus one field per loaded script (omitted here, so each
+  // keeps its original). Both schedule the build and send a 302 to the job
+  // page, never a queue Location. The redirect is still not followed, because
+  // a followed authentication bounce reads as a 200; a 3xx pointing at a login
+  // page is that bounce and fails. Success reports the build number the job
+  // was about to use, read just before the POST, as the likely new build.
   async replayBuild(
     job: string,
     buildNumber: number,
     mainScript?: string,
-  ): Promise<{ jobName: string; buildNumber: number; queueUrl: string }> {
+  ): Promise<{
+    jobName: string
+    buildNumber: number
+    replayed: true
+    expectedBuildNumber?: number
+    jobUrl?: string
+    queueUrl?: string
+  }> {
+    const expectedBuildNumber = await this._requestWithPathResolution(
+      job,
+      "/api/json?tree=nextBuildNumber",
+      (path) => this._request<{ nextBuildNumber?: number }>(path),
+    )
+      .then((d) => d?.nextBuildNumber)
+      .catch(() => undefined)
+
+    let postUrl = ""
     const res = await this._requestWithPathResolution(
       job,
-      `/${buildNumber}/replay/rebuild`,
-      (path) =>
-        this._post(
+      `/${buildNumber}/replay/${mainScript === undefined ? "rebuild" : "run"}`,
+      (path) => {
+        postUrl = joinUrl(this.baseUrl, path)
+        return this._post(
           path,
           mainScript === undefined
             ? { redirect: "manual" }
             : {
                 redirect: "manual",
                 contentType: "application/x-www-form-urlencoded",
-                body: new URLSearchParams({ mainScript }).toString(),
+                body: new URLSearchParams({
+                  mainScript,
+                  json: JSON.stringify({ mainScript }),
+                }).toString(),
               },
-        ),
+        )
+      },
     )
+
     const location = res.headers.get("location")
-    if (res.status >= 300 || res.type === "opaqueredirect")
-      throw new Error(
-        `Replay failed: HTTP ${res.status}` +
-          (location ? `, redirects to ${location}, not followed` : ""),
-      )
+    if (res.type === "opaqueredirect")
+      throw new Error("Replay failed: redirect could not be inspected")
+    if (res.status >= 300) {
+      if (!location)
+        throw new Error(`Replay failed: HTTP ${res.status} without a Location`)
+      const target = new URL(location, postUrl).toString()
+      if (/\/(login|securityRealm|commenceLogin)\b/i.test(target))
+        throw new Error(
+          `Replay failed: HTTP ${res.status} redirects to ${target}, an authentication page`,
+        )
+      return {
+        jobName: job,
+        buildNumber,
+        replayed: true,
+        ...(expectedBuildNumber ? { expectedBuildNumber } : {}),
+        jobUrl: target,
+      }
+    }
     if (!location)
       throw new Error(
         `Replay returned HTTP ${res.status} without a queue Location header`,
       )
-    return { jobName: job, buildNumber, queueUrl: location }
+    return {
+      jobName: job,
+      buildNumber,
+      replayed: true,
+      ...(expectedBuildNumber ? { expectedBuildNumber } : {}),
+      queueUrl: location,
+    }
   }
 
   // ── Nodes ──────────────────────────────────────────────────────────────────
