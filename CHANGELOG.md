@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 ---
 
+## 2.8.0 — 2026-11-20
+
+### Type change
+
+- **`queueUrl` is now optional in the replay result.** A replay is answered with a redirect rather than a queue item, so TypeScript callers that read `queueUrl` must handle `undefined`. ([c9b4c5f](https://github.com/kud/jenkins/commit/c9b4c5ff63b0c647a2ba7e7bdae3bbf188a5a69e))
+
+### Highlights
+
+- **Replaying a build with a custom script now runs that script.** It posts to Jenkins' replay/run endpoint; previously the script was silently ignored and the original ran again. ([c9b4c5f](https://github.com/kud/jenkins/commit/c9b4c5ff63b0c647a2ba7e7bdae3bbf188a5a69e))
+- **The redirect Jenkins sends after a replay counts as success.** The call returns the job URL and the expected build number instead of failing. ([c9b4c5f](https://github.com/kud/jenkins/commit/c9b4c5ff63b0c647a2ba7e7bdae3bbf188a5a69e))
+
+<details>
+<summary>Internal (2 commits)</summary>
+
+- Added a `homepage` field to the package metadata and a Jenkins icon asset. ([7a58b8f](https://github.com/kud/jenkins/commit/7a58b8fd81ca721745abfcd9d53102f9424634cc), [d82c24e](https://github.com/kud/jenkins/commit/d82c24e166f4720d6dd20b109e9d18ccb2e7029c))
+
+</details>
+
+---
+
 ## 2.7.1 — 2026-11-10
 
 ### Fixes
