@@ -13,10 +13,10 @@
 
 ## 🌟 Features
 
-- 🧩 **Single client, full surface** — `JenkinsClient` covers job/build metadata, console logs (with live streaming), artifacts, the build queue, and triggers
-- ⚙️ **Layered config resolution** — named server → environment variables → per-call overrides, so callers never hardcode credentials
+- 🧩 **Single client, full surface** — `JenkinsClient` covers job/build metadata, console logs (with live streaming), failure diagnosis, artifacts, the build queue, triggers, and job/node/view/system administration
+- ⚙️ **Layered config resolution** — stored server profile, overridden by instances declared in the environment, overridden by per-call overrides, so callers never hardcode credentials
 - 🗂 **Multi-server profiles** — add, switch, and remove named Jenkins servers without touching env vars
-- 🔁 **Resilient HTTP layer** — timeout and bounded retry with backoff on network errors and 5xx responses, automatic CSRF crumb handling on every mutating call
+- 🔁 **Resilient HTTP layer** — per-request timeout (15 s by default), opt-in bounded retry with backoff for reads on network errors, timeouts and 5xx responses (writes never retry), automatic CSRF crumb handling on every mutating call
 - 🌲 **Recursive job search** — BFS traversal across nested folders, plus an incremental/concurrent variant with progress callbacks for large instances
 - 🧼 **Log sanitisation** — strips ANSI escape codes and control characters from console output for clean rendering
 - 📐 **Fully typed** — exported TypeScript types for jobs, builds, artifacts, parameters, and changesets
@@ -41,7 +41,7 @@ const build = await client.getBuild("my-service")
 console.log(build.result, build.building)
 ```
 
-Configuration resolves in layers — named server profile → environment variables → explicit overrides:
+Configuration resolves in layers, from lowest to highest priority: a stored server profile, then instances declared in the environment (which win over the stored file when present), then `JENKINS_SERVER` / `JENKINS_TIMEOUT` / `JENKINS_RETRIES`, then explicit overrides. The resolved `timeout` and `retries` are not applied for you; pass them to the client's options (`new JenkinsClient(url, user, token, { timeout, retries })`).
 
 ```sh
 export JENKINS_URL=https://ci.example.com
@@ -75,27 +75,30 @@ addServer("prod", {
   token: "xxxx",
 })
 useServer("prod")
-listServers() // [{ name: "prod", url: "...", current: true }]
+listServers() // [{ name: "prod", url: "…", user: "erwann", token: "…", current: true }]
 ```
 
 ## 📖 API Reference
 
 ### Jobs & Builds
 
-| Method                                | Description                                                   |
-| ------------------------------------- | ------------------------------------------------------------- |
-| `getJob(job)`                         | Fetch a job's metadata (depth 1)                              |
-| `getBuild(job, buildNumber?)`         | Fetch a build; defaults to the last build                     |
-| `listBuilds(job, limit?)`             | Fetch recent builds concurrently                              |
-| `getBuildChanges(job, buildNumber?)`  | Trigger cause, culprits, and SCM commits for a build          |
-| `getJobParameters(job)`               | Parameter definitions for a parameterised job                 |
-| `searchJobs(query, limit?)`           | Recursive BFS search across folders                           |
-| `searchJobsIncremental(query, opts?)` | Same search, with a progress callback and bounded concurrency |
-| `getSpecificJobs(jobNames)`           | Batch-fetch jobs by name, tolerant of per-job errors          |
-| `getPipelineStages(job, buildNumber)` | Pipeline stage breakdown (Workflow API)                       |
-| `getTestReport(job, buildNumber)`     | Test report for a build                                       |
-| `diagnoseBuild(job, buildNumber?, opts?)` | Diagnose a failed build: failed stages, steps with log tails, test failures, hints |
-| `resolveJobPath(job)`                 | REST path for a job, keeping a multibranch branch's slashes in one segment (for `tree()` callers) |
+| Method                                    | Description                                                                                       |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `getJob(job)`                             | Fetch a job's metadata (depth 1)                                                                  |
+| `getBuild(job, buildNumber?)`             | Fetch a build; defaults to the last build                                                         |
+| `listBuilds(job, limit?)`                 | Fetch recent builds concurrently                                                                  |
+| `getBuildChanges(job, buildNumber?)`      | Trigger cause, culprits, and SCM commits for a build                                              |
+| `getJobParameters(job)`                   | Parameter definitions for a parameterised job                                                     |
+| `listJobs()`                              | Top-level jobs (no folder recursion)                                                              |
+| `searchJobs(query, limit?)`               | Recursive BFS search across folders                                                               |
+| `searchJobsIncremental(query, opts?)`     | Same search, with a progress callback and bounded concurrency                                     |
+| `getSpecificJobs(jobNames)`               | Batch-fetch jobs by name, tolerant of per-job errors                                              |
+| `getPipelineStages(job, buildNumber)`     | Pipeline stage breakdown (Workflow API)                                                           |
+| `getStageSteps(job, buildNumber, nodeId)` | Steps of one pipeline stage                                                                       |
+| `getStepLog(job, buildNumber, stepId)`    | Log of one pipeline step                                                                          |
+| `getTestReport(job, buildNumber)`         | Test report for a build                                                                           |
+| `diagnoseBuild(job, buildNumber?, opts?)` | Diagnose a failed build: failed stages, steps with log tails, test failures, hints                |
+| `resolveJobPath(job)`                     | REST path for a job, keeping a multibranch branch's slashes in one segment (for `tree()` callers) |
 
 ### Logs
 
@@ -121,28 +124,42 @@ listServers() // [{ name: "prod", url: "...", current: true }]
 | `getQueue()`                              | Fetch the build queue         |
 | `cancelQueueItem(id)`                     | Cancel a queued item          |
 
+### Job lifecycle & admin
+
+| Area   | Methods                                                                                                        |
+| ------ | -------------------------------------------------------------------------------------------------------------- |
+| Jobs   | `getJobConfig`, `createJob`, `copyJob`, `updateJobConfig`, `renameJob`, `deleteJob`, `enableJob`, `disableJob` |
+| Builds | `deleteBuild(job, buildNumber)`, `replayBuild(job, buildNumber, mainScript?)`                                  |
+| Nodes  | `listNodes()`, `getNode(name)`, `toggleNodeOffline(name, message?)`                                            |
+| Views  | `listViews()`, `getView(name)`                                                                                 |
+| System | `getSystemInfo()`, `getVersion()`, `getPlugins()`, `quietDown(reason?)`, `cancelQuietDown()`, `safeRestart()`  |
+
 ### Config
 
-| Export                                  | Description                                             |
-| --------------------------------------- | ------------------------------------------------------- |
-| `resolveConfig(overrides?)`             | Layered resolution: named server → env vars → overrides |
-| `addServer(name, { url, user, token })` | Add or update a named server profile                    |
-| `useServer(name)`                       | Switch the active named server                          |
-| `removeServer(name)`                    | Remove a named server profile                           |
-| `listServers()`                         | List all named servers, with the active one flagged     |
+| Export                                  | Description                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `resolveConfig(overrides?)`             | Layered resolution: stored profile → env instances → env settings → overrides        |
+| `envInstances()` / `listInstances()`    | Instances declared in the environment / env plus stored servers, env winning by name |
+| `addServer(name, { url, user, token })` | Add or update a named server profile                                                 |
+| `useServer(name)`                       | Switch the active named server                                                       |
+| `removeServer(name)`                    | Remove a named server profile                                                        |
+| `listServers()`                         | List all named servers, with the active one flagged                                  |
 
 ### Utilities
 
-| Export                           | Description                                                          |
-| -------------------------------- | -------------------------------------------------------------------- |
-| `sanitizeLogChunk(chunk, opts?)` | Strip ANSI codes and control characters from console output          |
-| `normalizeUrl(url)`              | Fix malformed schemes such as `http:/host` → `http://host`           |
-| `ensureScheme(url)`              | Prefix `https://` onto a bare host if no scheme is present           |
-| `parseBuildSpecifier(input)`     | Parse a job name, job URL, or build URL into a structured descriptor |
+| Export                                 | Description                                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `sanitizeLogChunk(chunk, opts?)`       | Strip ANSI codes and control characters from console output (`sanitizeAndAppend` for streams) |
+| `findErrorLines(log, opts?)`           | Error lines with context, as used by `diagnoseBuild`; also `findReportLinks`, `cleanStepLog`  |
+| `buildStatusToken(build)`              | Map a build to `success`, `failure`, `unstable`, `aborted`, `running` or `unknown`            |
+| `fmtDuration(build)` / `fmtAge(build)` | Compact duration (`3m`) and age (`12m ago`)                                                   |
+| `normalizeUrl(url)`                    | Fix malformed schemes such as `http:/host` → `http://host`                                    |
+| `ensureScheme(url)`                    | Prefix `https://` onto a bare host if no scheme is present                                    |
+| `parseBuildSpecifier(input)`           | Parse a job name, job URL, or build URL into a structured descriptor                          |
 
 ### Types
 
-`JenkinsJob`, `JenkinsBuild`, `JenkinsBuildRef`, `JenkinsArtifact`, `JenkinsCrumb`, `JenkinsParameterDefinition`, `JenkinsCommit`, `JenkinsBuildChanges` — exported from `src/types.ts` and used across every method above.
+`JenkinsJob`, `JenkinsBuild`, `JenkinsBuildRef`, `JenkinsArtifact`, `JenkinsCrumb`, `JenkinsParameterDefinition`, `JenkinsCommit`, `JenkinsBuildChanges`, `DiagnoseBuildResult`, `JenkinsNode`, `JenkinsView`, `JenkinsPlugin` and more — exported from `src/types.ts` and used across every method above.
 
 Auth is HTTP Basic (username + API token), or a bearer token with `new JenkinsClient(url, "", "", { auth: { bearer: token } })`; with neither, no `Authorization` header is sent. Every mutating call (`triggerBuild`, `stopBuild`, `cancelQueueItem`, …) attaches a CSRF crumb and the session cookie it was issued with, and re-issues both once if Jenkins expires the session (a 403), so callers never manage crumbs themselves.
 
@@ -152,16 +169,19 @@ Auth is HTTP Basic (username + API token), or a bearer token with `new JenkinsCl
 src/
 ├── index.ts             # public exports
 ├── jenkins-client.ts    # JenkinsClient — data + actions
-├── config.ts            # resolveConfig, named-server helpers
+├── config.ts            # resolveConfig, env instances, named-server helpers
 ├── types.ts             # shared Jenkins types
 ├── url-utils.ts         # URL parsing/normalisation helpers
-└── log-sanitizer.ts     # sanitizeLogChunk
+├── formatters.ts        # build status token, duration and age
+├── error-lines.ts       # error-line extraction for diagnosis
+└── log-sanitizer.ts     # sanitizeLogChunk, sanitizeAndAppend
 ```
 
-| Script      | Description                         |
-| ----------- | ----------------------------------- |
-| `build`     | Compile `src/` to `dist/` via `tsc` |
-| `typecheck` | Type-check without emitting output  |
+| Script      | Description                          |
+| ----------- | ------------------------------------ |
+| `build`     | Compile `src/` to `dist/` via `tsc`  |
+| `typecheck` | Type-check without emitting output   |
+| `test`      | Run `test/` with `node --test` + tsx |
 
 ```sh
 git clone https://github.com/kud/jenkins.git
@@ -172,12 +192,12 @@ npm run build
 
 ## 🏗 Tech Stack
 
-| Layer        | Choice                                                        |
-| ------------ | ------------------------------------------------------------- |
-| Language     | TypeScript 5.9                                                |
-| Runtime      | Node.js ≥ 22, native `fetch`                                  |
-| Module       | ESM (`type: module`)                                          |
-| Dependencies | None at runtime — `@types/node` and `typescript` are dev-only |
+| Layer        | Choice                                                               |
+| ------------ | -------------------------------------------------------------------- |
+| Language     | TypeScript 5.9                                                       |
+| Runtime      | Node.js ≥ 22, native `fetch`                                         |
+| Module       | ESM (`type: module`)                                                 |
+| Dependencies | None at runtime — `@types/node`, `tsx` and `typescript` are dev-only |
 
 ---
 
