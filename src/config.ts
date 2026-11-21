@@ -198,17 +198,22 @@ export const listInstances = (): JenkinsInstance[] => {
   return Array.from(merged.values())
 }
 
+// A whole number at or above `min`, or undefined so the client keeps its own
+// default — the same quiet fallback JenkinsClient applies to bad options.
+// parseInt alone would read "30s" as 30 and "abc" as NaN.
+const envInteger = (value: string | undefined, min: number) => {
+  if (!value || !/^\s*\d+\s*$/.test(value)) return undefined
+  const n = Number(value)
+  return Number.isSafeInteger(n) && n >= min ? n : undefined
+}
+
 export const resolveConfig = (
   overrides: ResolveOverrides = {},
 ): ResolvedConfig => {
   const rawEnv = {
     server: process.env.JENKINS_SERVER,
-    timeout: process.env.JENKINS_TIMEOUT
-      ? parseInt(process.env.JENKINS_TIMEOUT, 10)
-      : undefined,
-    retries: process.env.JENKINS_RETRIES
-      ? parseInt(process.env.JENKINS_RETRIES, 10)
-      : undefined,
+    timeout: envInteger(process.env.JENKINS_TIMEOUT, 1),
+    retries: envInteger(process.env.JENKINS_RETRIES, 0),
   }
   // Only include env vars that are non-empty (avoid overriding file values with empty strings)
   const env = Object.fromEntries(

@@ -204,3 +204,34 @@ test("resolveConfig returns server, timeout and retries alongside the credential
   assert.equal(timeout, 30000)
   assert.equal(retries, 2)
 })
+
+test("a non-numeric JENKINS_TIMEOUT or JENKINS_RETRIES is ignored, leaving the client default", () => {
+  for (const [timeout, retries] of [
+    ["abc", "x"],
+    ["30s", "2.5"],
+    ["0", "-1"],
+    ["", ""],
+  ]) {
+    clearEnv()
+    process.env.JENKINS_URL = "https://ci.example.com"
+    process.env.JENKINS_TIMEOUT = timeout
+    process.env.JENKINS_RETRIES = retries
+
+    const cfg = resolveConfig()
+    assert.equal(cfg.timeout, undefined, `timeout ${JSON.stringify(timeout)}`)
+    assert.equal(cfg.retries, undefined, `retries ${JSON.stringify(retries)}`)
+    assert.equal("timeout" in cfg, false)
+    assert.equal("retries" in cfg, false)
+  }
+})
+
+test("valid JENKINS_TIMEOUT and JENKINS_RETRIES still apply, zero retries included", () => {
+  clearEnv()
+  process.env.JENKINS_URL = "https://ci.example.com"
+  process.env.JENKINS_TIMEOUT = " 5000 "
+  process.env.JENKINS_RETRIES = "0"
+
+  const cfg = resolveConfig()
+  assert.equal(cfg.timeout, 5000)
+  assert.equal(cfg.retries, 0)
+})
