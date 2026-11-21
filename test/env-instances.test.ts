@@ -163,3 +163,24 @@ test("listInstances includes the environment's instances", () => {
   assert.ok(names.includes("pipeline"), `expected pipeline in ${names}`)
   assert.ok(names.includes("scheduler"), `expected scheduler in ${names}`)
 })
+
+test("resolveConfig returns server, timeout and retries alongside the credentials", () => {
+  clearEnv()
+  process.env.JENKINS_INSTANCES = "pipeline,scheduler"
+  process.env.JENKINS_URL =
+    "https://pipeline.example.com,https://scheduler.example.com"
+  process.env.JENKINS_SERVER = "scheduler"
+  process.env.JENKINS_TIMEOUT = "30000"
+  process.env.JENKINS_RETRIES = "2"
+
+  const cfg = resolveConfig()
+  // Typed access: these fields belong to ResolvedConfig, no cast needed.
+  const server: string | undefined = cfg.server
+  const timeout: number | undefined = cfg.timeout
+  const retries: number | undefined = cfg.retries
+
+  assert.equal(cfg.url, "https://scheduler.example.com")
+  assert.equal(server, "scheduler")
+  assert.equal(timeout, 30000)
+  assert.equal(retries, 2)
+})

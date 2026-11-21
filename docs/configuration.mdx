@@ -24,7 +24,7 @@ From lowest to highest priority:
 The overrides accepted are `url`, `user`, `token`, `server`, `timeout` and `retries`. The result can carry `server`, `timeout` and `retries` as well as the credentials, so pass the latter two on to the client yourself:
 
 ```ts
-const cfg: any = resolveConfig({ server: "staging" })
+const cfg = resolveConfig({ server: "staging" })
 const client = new JenkinsClient(cfg.url, cfg.user, cfg.token, {
   timeout: cfg.timeout,
   retries: cfg.retries,

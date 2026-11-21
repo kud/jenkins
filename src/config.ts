@@ -33,6 +33,16 @@ interface ResolveOverrides {
   retries?: number
 }
 
+/** What resolveConfig returns: the chosen credentials plus the request settings. */
+export interface ResolvedConfig {
+  url?: string
+  user?: string
+  token?: string
+  server?: string
+  timeout?: number
+  retries?: number
+}
+
 export interface JenkinsInstance {
   name: string
   url?: string
@@ -175,7 +185,7 @@ export const listInstances = (): JenkinsInstance[] => {
 
 export const resolveConfig = (
   overrides: ResolveOverrides = {},
-): StoredConfig => {
+): ResolvedConfig => {
   const rawEnv = {
     server: process.env.JENKINS_SERVER,
     timeout: process.env.JENKINS_TIMEOUT
