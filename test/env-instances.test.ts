@@ -26,7 +26,7 @@ const clearEnv = () => {
 
 clearEnv()
 
-const { envInstances, resolveConfig, listInstances } =
+const { envInstances, resolveConfig, listInstances, JenkinsConfigError } =
   await import("../src/config.js")
 
 test("no JENKINS_URL yields no instances", () => {
@@ -98,6 +98,26 @@ test("a name/URL count mismatch throws rather than pairing them off", () => {
     "https://pipeline.example.com,https://scheduler.example.com"
 
   assert.throws(() => envInstances(), /counts must match/)
+})
+
+test("a count mismatch is a JenkinsConfigError naming both lists and the fix", () => {
+  clearEnv()
+  process.env.JENKINS_INSTANCES = "pipeline,scheduler,extra"
+  process.env.JENKINS_URL =
+    "https://pipeline.example.com,https://scheduler.example.com"
+
+  for (const call of [envInstances, resolveConfig, listInstances]) {
+    assert.throws(
+      () => call(),
+      (err: any) =>
+        err instanceof JenkinsConfigError &&
+        err.name === "JenkinsConfigError" &&
+        err.code === "JENKINS_INSTANCES_MISMATCH" &&
+        err.message.includes("3 name(s) (pipeline, scheduler, extra)") &&
+        err.message.includes("2 URL(s)") &&
+        err.message.includes("unset JENKINS_INSTANCES"),
+    )
+  }
 })
 
 test("resolveConfig uses the first instance by default", () => {

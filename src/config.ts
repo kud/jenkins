@@ -132,6 +132,19 @@ const deriveName = (url: string, index: number): string => {
 }
 
 /**
+ * Raised when the Jenkins settings in the environment contradict each other.
+ * `code` lets a caller tell it apart from a network or HTTP failure.
+ */
+export class JenkinsConfigError extends Error {
+  code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = "JenkinsConfigError"
+    this.code = code
+  }
+}
+
+/**
  * Jenkins instances declared in the environment.
  *
  * Single instance:
@@ -160,8 +173,10 @@ export const envInstances = (): JenkinsInstance[] => {
   // one instance as another, which looks like a permissions problem on a server
   // you never meant to touch.
   if (names.length > 0 && names.length !== urls.length) {
-    throw new Error(
-      `JENKINS_INSTANCES has ${names.length} name(s) but JENKINS_URL has ${urls.length} — counts must match`,
+    throw new JenkinsConfigError(
+      "JENKINS_INSTANCES_MISMATCH",
+      `JENKINS_INSTANCES lists ${names.length} name(s) (${names.join(", ")}) but JENKINS_URL lists ${urls.length} URL(s); counts must match. ` +
+        "Give one name per URL, in the same order, or unset JENKINS_INSTANCES to name each instance after its hostname.",
     )
   }
 
