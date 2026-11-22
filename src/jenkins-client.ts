@@ -20,6 +20,16 @@ import {
   JenkinsPlugin,
 } from "./types.js"
 import { cleanStepLog, findErrorLines, findReportLinks } from "./error-lines.js"
+import {
+  artifactPath,
+  buildRef,
+  flowNodeId,
+  nameSegments,
+  pathSegment,
+  queueId,
+} from "./path-segments.js"
+
+export { JenkinsInputError, BUILD_PERMALINKS } from "./path-segments.js"
 
 const getFetch = () => globalThis.fetch as typeof fetch
 const joinUrl = (base: string, path: string): string =>
@@ -55,17 +65,43 @@ interface InternalRequestOptions {
 // the extra slash they typed. Job names arrive from config files, CLI arguments
 // and API responses, so an untidy one is ordinary input rather than a
 // programming error, and must not be able to look like an absence.
+//
+// `.` and `..` segments throw a JenkinsInputError: they cannot name a Jenkins
+// item, and URL parsing would collapse them into a different path.
 export const jobPath = (job: string): string =>
-  "job/" + job.split("/").filter(Boolean).map(encodeURIComponent).join("/job/")
+  "job/" + nameSegments(job).map(encodeURIComponent).join("/job/")
 
 // Split a full item name into the folder that will hold it and its own name.
 // createItem is posted to the parent folder, never to the item's own path.
 const splitItemName = (fullName: string): { parent: string; name: string } => {
-  const segments = fullName.split("/").filter(Boolean)
+  const segments = nameSegments(fullName)
   if (segments.length === 0)
     throw new Error("Job name must be a non-empty Jenkins full name")
   const name = segments.pop() as string
   return { parent: segments.join("/"), name }
+}
+
+// Credentials over plain http:// travel in clear text on every request. The
+// client still works (an internal Jenkins behind a trusted network is real),
+// so this warns, once per process, through process.emitWarning so a consumer
+// can listen for it or silence it. Loopback hosts are exempt: nothing leaves
+// the machine.
+let warnedInsecureTransport = false
+const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i
+const warnIfInsecureTransport = (baseUrl: string, hasCredentials: boolean) => {
+  if (warnedInsecureTransport || !hasCredentials) return
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    return
+  }
+  if (url.protocol !== "http:" || LOOPBACK.test(url.hostname)) return
+  warnedInsecureTransport = true
+  process.emitWarning(
+    `Jenkins credentials are sent over plain http:// to ${url.host}; use https:// so the token is not readable on the network.`,
+    { code: "JENKINS_INSECURE_TRANSPORT" },
+  )
 }
 
 export class JenkinsClient {
@@ -111,6 +147,7 @@ export class JenkinsClient {
       : user && token
         ? "Basic " + Buffer.from(`${user}:${token}`).toString("base64")
         : ""
+    warnIfInsecureTransport(baseUrl, !!this.authHeader)
     const timeout = opts.timeout ?? 15000
     const retries = opts.retries ?? 0
     this.timeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 15000
@@ -370,7 +407,7 @@ export class JenkinsClient {
    * (a multibranch project), and segments after that form the branch.
    */
   private async _resolveMultibranchPath(job: string): Promise<string> {
-    const segments = job.split("/").filter(Boolean)
+    const segments = nameSegments(job)
     if (segments.length === 0) return jobPath(job)
 
     let pathSoFar = ""
@@ -476,7 +513,7 @@ export class JenkinsClient {
     }
     return this._requestWithPathResolution(
       job,
-      `/${buildNumber}/api/json`,
+      `/${buildRef(buildNumber)}/api/json`,
       (path) => this._request<JenkinsBuild>(path),
     )
   }
@@ -490,7 +527,7 @@ export class JenkinsClient {
     }
     return this._requestWithPathResolution(
       job,
-      `/${buildNumber}/consoleText`,
+      `/${buildRef(buildNumber)}/consoleText`,
       (path) => this._request<string>(path),
     )
   }
@@ -509,6 +546,7 @@ export class JenkinsClient {
       buildNumber = number
     }
 
+    const ref = buildRef(buildNumber)
     const resolvedPath = await this._getResolvedJobPath(job)
     let start = 0
     const signal = opts.signal
@@ -517,7 +555,7 @@ export class JenkinsClient {
     let finished = false
     while (!finished) {
       if (isAborted()) break
-      const urlPath = `${resolvedPath}/${buildNumber}/logText/progressiveText?start=${start}`
+      const urlPath = `${resolvedPath}/${ref}/logText/progressiveText?start=${start}`
       const url = joinUrl(this.baseUrl, urlPath)
       const res = await this._fetchWithTimeout(url, {
         headers: { ...this.authHeaders },
@@ -600,8 +638,9 @@ export class JenkinsClient {
     job: string,
     buildNumber: number,
   ): Promise<{ stopped: true }> {
+    const ref = buildRef(buildNumber)
     const resolvedPath = await this._getResolvedJobPath(job)
-    const url = joinUrl(this.baseUrl, `${resolvedPath}/${buildNumber}/stop`)
+    const url = joinUrl(this.baseUrl, `${resolvedPath}/${ref}/stop`)
     const res = await this._write(url)
     if (![200, 201, 202].includes(res.status))
       throw new Error(`Stop failed: ${res.status} ${res.statusText}`)
@@ -614,7 +653,7 @@ export class JenkinsClient {
   }
 
   async cancelQueueItem(id: number | string): Promise<{ cancelled: true }> {
-    const url = joinUrl(this.baseUrl, `queue/cancelItem?id=${id}`)
+    const url = joinUrl(this.baseUrl, `queue/cancelItem?id=${queueId(id)}`)
     const res = await this._write(url)
     if (![200, 201, 202, 302].includes(res.status))
       throw new Error(`Cancel queue failed: ${res.status} ${res.statusText}`)
@@ -625,7 +664,7 @@ export class JenkinsClient {
     // refine later
     return this._requestWithPathResolution(
       job,
-      `/${buildNumber}/testReport/api/json`,
+      `/${buildRef(buildNumber)}/testReport/api/json`,
       (path) => this._request<any>(path),
     )
   }
@@ -639,7 +678,7 @@ export class JenkinsClient {
     const ref = buildNumber ?? "lastBuild"
     return this._requestWithPathResolution(
       job,
-      `/${ref}/wfapi/describe`,
+      `/${buildRef(ref)}/wfapi/describe`,
       (path) => this._request<any>(path),
     )
   }
@@ -653,7 +692,7 @@ export class JenkinsClient {
   ): Promise<any> {
     return this._requestWithPathResolution(
       job,
-      `/${buildNumber}/execution/node/${nodeId}/wfapi/describe`,
+      `/${buildRef(buildNumber)}/execution/node/${flowNodeId(nodeId, "stage node id")}/wfapi/describe`,
       (path) => this._request<any>(path),
     )
   }
@@ -668,7 +707,7 @@ export class JenkinsClient {
   ): Promise<string> {
     const r = await this._requestWithPathResolution(
       job,
-      `/${buildNumber}/execution/node/${stepId}/wfapi/log`,
+      `/${buildRef(buildNumber)}/execution/node/${flowNodeId(stepId, "step id")}/wfapi/log`,
       (path) => this._request<any>(path),
     )
     const raw = (r && r.text) || ""
@@ -715,7 +754,7 @@ export class JenkinsClient {
       "number,actions[causes[shortDescription]],changeSets[items[commitId,msg,date,author[fullName]]],culprits[fullName]"
     const data = await this._requestWithPathResolution(
       job,
-      `/${buildNumber}/api/json?tree=${tree}`,
+      `/${buildRef(buildNumber)}/api/json?tree=${tree}`,
       (path) => this._request<any>(path),
     )
     const causes = (data.actions || [])
@@ -763,7 +802,7 @@ export class JenkinsClient {
   ): Promise<Buffer> {
     return this._requestWithPathResolution(
       job,
-      `/${buildNumber}/artifact/${relativePath}`,
+      `/${buildRef(buildNumber)}/artifact/${artifactPath(relativePath)}`,
       (path) => this._request(path, { as: "buffer" }),
     )
   }
@@ -1021,7 +1060,7 @@ export class JenkinsClient {
       buildInfo.url ??
       joinUrl(
         this.baseUrl,
-        `${await this._getResolvedJobPath(job)}/${buildNumber}/`,
+        `${await this._getResolvedJobPath(job)}/${buildRef(buildNumber)}/`,
       )
 
     const hints: string[] = []
@@ -1241,7 +1280,7 @@ export class JenkinsClient {
     fromName: string,
     newName: string,
   ): Promise<{ fromName: string; newName: string; copied: true }> {
-    const source = fromName.split("/").filter(Boolean).join("/")
+    const source = nameSegments(fromName).join("/")
     if (!source)
       throw new Error("Job name must be a non-empty Jenkins full name")
     const { parent, name } = splitItemName(newName)
@@ -1309,7 +1348,7 @@ export class JenkinsClient {
   ): Promise<{ jobName: string; buildNumber: number; deleted: true }> {
     await this._requestWithPathResolution(
       job,
-      `/${buildNumber}/doDelete`,
+      `/${buildRef(buildNumber)}/doDelete`,
       (path) => this._post(path),
     )
     return { jobName: job, buildNumber, deleted: true }
@@ -1336,6 +1375,7 @@ export class JenkinsClient {
     jobUrl?: string
     queueUrl?: string
   }> {
+    buildRef(buildNumber) // refuse a bad build before any request goes out
     const expectedBuildNumber = await this._requestWithPathResolution(
       job,
       "/api/json?tree=nextBuildNumber",
@@ -1347,7 +1387,7 @@ export class JenkinsClient {
     let postUrl = ""
     const res = await this._requestWithPathResolution(
       job,
-      `/${buildNumber}/replay/${mainScript === undefined ? "rebuild" : "run"}`,
+      `/${buildRef(buildNumber)}/replay/${mainScript === undefined ? "rebuild" : "run"}`,
       (path) => {
         postUrl = joinUrl(this.baseUrl, path)
         return this._post(
@@ -1423,7 +1463,7 @@ export class JenkinsClient {
 
   async getNode(nodeName: string): Promise<JenkinsNodeDetail> {
     const data = await this._request<any>(
-      `computer/${encodeURIComponent(nodeName)}/api/json?depth=1`,
+      `computer/${pathSegment(nodeName, "node name")}/api/json?depth=1`,
     )
     return {
       name: data.displayName || nodeName,
@@ -1442,7 +1482,7 @@ export class JenkinsClient {
     offlineMessage = "",
   ): Promise<{ nodeName: string; toggledOffline: true }> {
     await this._post(
-      `computer/${encodeURIComponent(nodeName)}/toggleOffline?offlineMessage=${encodeURIComponent(offlineMessage)}`,
+      `computer/${pathSegment(nodeName, "node name")}/toggleOffline?offlineMessage=${encodeURIComponent(offlineMessage)}`,
     )
     return { nodeName, toggledOffline: true }
   }
@@ -1464,7 +1504,7 @@ export class JenkinsClient {
 
   async getView(viewName: string): Promise<JenkinsViewDetail> {
     const data = await this._request<any>(
-      `view/${encodeURIComponent(viewName)}/api/json`,
+      `view/${pathSegment(viewName, "view name")}/api/json`,
     )
     return {
       name: data.name || viewName,

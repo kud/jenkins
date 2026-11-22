@@ -78,10 +78,49 @@ export const loadConfig = (): StoredConfig => {
   }
 }
 
+/**
+ * Write a file holding credentials so only its owner can read it.
+ *
+ * ⚠ THE MODE MUST BE RIGHT FROM THE FIRST BYTE. A plain writeFileSync creates
+ * the file 0644 under the usual 022 umask, so the API token sits readable by
+ * every local account, and a chmod afterwards leaves a window where it is. The
+ * content goes to a temporary file opened 0600 in the same directory, then is
+ * renamed over the target: a reader sees the old file or the new one, never a
+ * half-written token, and an existing file that was once world-readable is
+ * replaced by one that is not. The directory is created 0700, and tightened to
+ * it when this created it; an existing directory the user chose is left alone.
+ */
+export const writeSecretFile = (file: string, data: string): void => {
+  const dir = path.dirname(file)
+  const created = fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // mkdir's mode is filtered by the umask; set it explicitly for what we made.
+  if (created) fs.chmodSync(dir, 0o700)
+  const tmp = path.join(
+    dir,
+    `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`,
+  )
+  try {
+    const fd = fs.openSync(tmp, "wx", 0o600)
+    try {
+      fs.fchmodSync(fd, 0o600) // the umask may have narrowed it further; never widened
+      fs.writeFileSync(fd, data)
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+    fs.renameSync(tmp, file)
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp)
+    } catch {}
+    throw e
+  }
+  fs.chmodSync(file, 0o600)
+}
+
 export const saveConfig = (
   cfg: Partial<StoredConfig> & { __replaceServers?: boolean },
 ) => {
-  fs.mkdirSync(DIR, { recursive: true })
   let merged
   const existing = loadConfig()
   if (cfg.__replaceServers) {
@@ -98,7 +137,7 @@ export const saveConfig = (
     merged = { ...existing, ...cfg }
   }
 
-  fs.writeFileSync(FILE, JSON.stringify(merged, null, 2))
+  writeSecretFile(FILE, JSON.stringify(merged, null, 2))
 }
 
 const pickServer = (file, serverName) => {
