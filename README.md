@@ -144,12 +144,14 @@ listServers() // [{ name: "prod", url: "…", user: "erwann", token: "…", curr
 | `useServer(name)`                       | Switch the active named server                                                       |
 | `removeServer(name)`                    | Remove a named server profile                                                        |
 | `listServers()`                         | List all named servers, with the active one flagged                                  |
+| `writeSecretFile(path, data)`           | Write a credentials file `0600`, atomically, in a `0700` directory (used by every save) |
 
 ### Utilities
 
 | Export                                 | Description                                                                                   |
 | -------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `sanitizeLogChunk(chunk, opts?)`       | Strip ANSI codes and control characters from console output (`sanitizeAndAppend` for streams) |
+| `sanitizeForTerminal(text, opts?)`     | Make untrusted text safe to print: removes every escape (CSI, OSC, 8-bit C1), control and CR; `{ preserveColors: true }` keeps SGR colours only. `getConsoleText` returns raw text, so printing callers apply this |
 | `findErrorLines(log, opts?)`           | Error lines with context, as used by `diagnoseBuild`; also `findReportLinks`, `cleanStepLog`  |
 | `buildStatusToken(build)`              | Map a build to `success`, `failure`, `unstable`, `aborted`, `running` or `unknown`            |
 | `fmtDuration(build)` / `fmtAge(build)` | Compact duration (`3m`) and age (`12m ago`)                                                   |
@@ -163,6 +165,8 @@ listServers() // [{ name: "prod", url: "…", user: "erwann", token: "…", curr
 
 Auth is HTTP Basic (username + API token), or a bearer token with `new JenkinsClient(url, "", "", { auth: { bearer: token } })`; with neither, no `Authorization` header is sent. Every mutating call (`triggerBuild`, `stopBuild`, `cancelQueueItem`, …) attaches a CSRF crumb and the session cookie it was issued with, and re-issues both once if Jenkins expires the session (a 403), so callers never manage crumbs themselves.
 
+Every caller-supplied piece of a URL path is confined to its own segment, and a bad one throws `JenkinsInputError` before any request leaves: a build is a positive integer or a permalink (`lastBuild`, `lastSuccessfulBuild`, `lastFailedBuild`, `lastStableBuild`, `lastUnstableBuild`, `lastCompletedBuild`), a queue id an integer, job, node and view names may not contain `.` or `..` segments, and an artifact path may not contain empty, `.` or `..` segments. A client given credentials and a plain `http://` URL (other than loopback) emits one `JENKINS_INSECURE_TRANSPORT` process warning.
+
 ## 🔧 Development
 
 ```
@@ -174,7 +178,8 @@ src/
 ├── url-utils.ts         # URL parsing/normalisation helpers
 ├── formatters.ts        # build status token, duration and age
 ├── error-lines.ts       # error-line extraction for diagnosis
-└── log-sanitizer.ts     # sanitizeLogChunk, sanitizeAndAppend
+├── path-segments.ts     # URL path-segment guards (JenkinsInputError)
+└── log-sanitizer.ts     # sanitizeLogChunk, sanitizeAndAppend, sanitizeForTerminal
 ```
 
 | Script      | Description                          |
